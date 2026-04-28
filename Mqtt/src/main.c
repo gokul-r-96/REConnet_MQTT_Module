@@ -586,7 +586,7 @@ void mqtt_module_start()
 
 int main()
 {
-
+printf("mqtt module started\n");
     if (log_init() != 0)
     {
         fprintf(stderr, "WARNING: Logging unavailable, continuing without log file.\n");
