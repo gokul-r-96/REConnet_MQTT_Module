@@ -120,9 +120,9 @@ void *mqtt_worker_thread(void *arg)
     int modbus_data_interval = 0;
     int health_check_data_interval = 0;
 
-    // int interval_sec;
-    // int elapsed;
-    // int remaining;
+    int interval_sec;
+    int elapsed;
+    int remaining;
     while (stop_flag)
     {
         LOG_INFO("Message is Waiting to Publish in the given interval");
@@ -340,6 +340,37 @@ void *mqtt_worker_thread(void *arg)
             else
             {
                 LOG_ERROR("Failed to generate Modbus JSON");
+            }
+        }
+        if (current_active)
+        {
+            interval_sec = current_active->cfg.modbus_data_pub_interval * 60;
+            elapsed = now - last_publish_modbus;
+            remaining = interval_sec - elapsed;
+            if (remaining > 0)
+            {
+                LOG_INFO("Modbus messages will publish in %d minutes", remaining / 60);
+            }
+            interval_sec = current_active->cfg.hc_pub_interval * 60;
+            elapsed = now - last_publish_hc;
+            remaining = interval_sec - elapsed;
+            if (remaining > 0)
+            {
+                LOG_INFO("Health check messages will publish in %d minutes", remaining / 60);
+            }
+            interval_sec = current_active->cfg.dlms_data_pub_interval * 60;
+            elapsed = now - last_publish_profile;
+            remaining = interval_sec - elapsed;
+            if (remaining > 0)
+            {
+                LOG_INFO("Meter Profile Data will publish in %d minutes", remaining / 60);
+            }
+            interval_sec = current_active->cfg.dlms_inst_pub_interval * 60;
+            elapsed = now - last_publish_inst;
+            remaining = interval_sec - elapsed;
+            if (remaining > 0)
+            {
+                LOG_INFO("Instataneous Data will publish in %d minutes", remaining / 60);
             }
         }
 
