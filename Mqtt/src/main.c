@@ -16,6 +16,7 @@ char meter_serials[MAX_METERS][32];
 int meter_count = 0;
 int certificate_path_check_primary = 0;
 int certificate_path_check_secondary = 0;
+volatile sig_atomic_t stop_flag = 1;
 // rithika 02April2026
 time_t primary_mqtt_conn_time;
 time_t secn_mqtt_conn_time;
@@ -122,7 +123,7 @@ void *mqtt_worker_thread(void *arg)
     // int interval_sec;
     // int elapsed;
     // int remaining;
-    while (1)
+    while (stop_flag)
     {
         LOG_INFO("Message is Waiting to Publish in the given interval");
         time_t now = time(NULL);
@@ -584,9 +585,49 @@ void mqtt_module_start()
     pthread_create(&worker, NULL, mqtt_worker_thread, NULL);
 }
 
+/* This function will handle the closing broker connections of both primary and secondary -- 27/04/2026 */
+void mqtt_cleanup()
+{
+    LOG_INFO("Cleaning up MQTT connections...");
+
+    if (primary.client)
+    {
+        MQTTAsync_disconnectOptions disc_opts =
+            MQTTAsync_disconnectOptions_initializer;
+
+        MQTTAsync_disconnect(primary.client, &disc_opts);
+        MQTTAsync_destroy(&primary.client);
+        primary.client = NULL;
+    }
+
+    if (secondary.client)
+    {
+        MQTTAsync_disconnectOptions disc_opts =
+            MQTTAsync_disconnectOptions_initializer;
+
+        MQTTAsync_disconnect(secondary.client, &disc_opts);
+        MQTTAsync_destroy(&secondary.client);
+        secondary.client = NULL;
+    }
+
+    LOG_INFO("MQTT cleanup completed");
+}
+
+void handle_signal(int sig)
+{
+    LOG_INFO("Received signal %d, shutting down...", sig);
+    stop_flag = 0;
+}
+
+
 int main()
 {
 
+    //Signal Handling for MQTT Process -- Gokul added this 27/04/2026
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    //signal(SIGQUIT, handle_signal);
+    
     if (log_init() != 0)
     {
         fprintf(stderr, "WARNING: Logging unavailable, continuing without log file.\n");
@@ -608,12 +649,14 @@ int main()
 
     mqtt_module_start();
 
-    while (1)
+    while (stop_flag)
     {
         // rithika 16April2026
         iec104_log_sink_poll_network();
         sleep(1);
     }
+
+    mqtt_cleanup();//Gokul added the mqtt cleanup function to shut down the process gracefully..!! 27/04/2026
 
     redisFree(ctx);
 
