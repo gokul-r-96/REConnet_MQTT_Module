@@ -17,6 +17,7 @@
 
 #include "../include/general.h"
 
+extern int ls_cmd_redis_resp;
 /* ============================================================
  *  OBIS parameter mapping
  * ============================================================ */
@@ -250,8 +251,18 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
 
     /* Build table name */
     char table[128];
-    snprintf(table, sizeof(table), "ls_data_%s_%s_%s_%s",
-             status->manuf_key, status->dcu_serial, status->port, serial);
+
+    if (ls_cmd_redis_resp == 1)
+    {
+        snprintf(table, sizeof(table), "ls_data_od_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+    }
+    else
+    {
+
+        snprintf(table, sizeof(table), "ls_data_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+    }
 
     LOG_INFO("Opening SQLite DB: %s, table: %s", db_path, table);
 
@@ -447,19 +458,20 @@ static void cdf_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profil
             //     }
             // }
 
-            if(p->param_name[0] != '\0'){
-            fprintf(fp,
-                    "\t\t\t\t\t<PARAMETER"
-                    " CODE=\"%s\""
-                    " OBIS_CODE=\"%s\""
-                    " NAME=\"%s\""
-                    " VALUE=\"%s\""
-                    " UNIT=\"%s\"/>\n",
-                    p->param_code,
-                    p->obis_hex,
-                    p->param_name, // name,
-                    p->value,
-                    p->unit);
+            if (p->param_name[0] != '\0')
+            {
+                fprintf(fp,
+                        "\t\t\t\t\t<PARAMETER"
+                        " CODE=\"%s\""
+                        " OBIS_CODE=\"%s\""
+                        " NAME=\"%s\""
+                        " VALUE=\"%s\""
+                        " UNIT=\"%s\"/>\n",
+                        p->param_code,
+                        p->obis_hex,
+                        p->param_name, // name,
+                        p->value,
+                        p->unit);
             }
         }
         fprintf(fp, "\t\t\t\t</IP>\n");
@@ -518,7 +530,7 @@ int generate_load_profile_cdf(redisContext *ctx, const char *serial, const char 
 
     char out_path[512];
     snprintf(out_path, sizeof(out_path),
-             "%sCDF_LS_%s_%s.xml",CDF_OUTPUT_DIR, serial, date);
+             "%sCDF_LS_%s_%s.xml", CDF_OUTPUT_DIR, serial, date);
 
     FILE *fp = fopen(out_path, "w");
     if (!fp)

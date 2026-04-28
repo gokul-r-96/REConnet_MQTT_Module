@@ -16,12 +16,13 @@ char meter_serials[MAX_METERS][32];
 int meter_count = 0;
 int certificate_path_check_primary = 0;
 int certificate_path_check_secondary = 0;
-volatile sig_atomic_t stop_flag = 1;
 // rithika 02April2026
 time_t primary_mqtt_conn_time;
 time_t secn_mqtt_conn_time;
 int cur_active_mqtt = -1;
 char dcu_ser_num[SIZE_32];
+
+extern int check_redis_resp;
 /**
  * mqtt_module_start()
  * -------------------
@@ -119,10 +120,9 @@ void *mqtt_worker_thread(void *arg)
     int health_check_data_interval = 0;
 
     // int interval_sec;
-    // int elapsed ;
+    // int elapsed;
     // int remaining;
-    //while(1)
-    while (stop_flag)
+    while (1)
     {
         LOG_INFO("Message is Waiting to Publish in the given interval");
         time_t now = time(NULL);
@@ -211,11 +211,16 @@ void *mqtt_worker_thread(void *arg)
                 mqtt_connect(&secondary);
             }
         }
+printf("check_redis_resp %d\n",check_redis_resp);
+        if (check_redis_resp == 1)
+        {
+            read_redis_resp(current_active);
+        }
 
         /* Publish */
         // interval_sec = current_active->cfg.dlms_inst_pub_interval * 60;
-        // elapsed      = now - last_publish_inst;
-        // remaining    = interval_sec - elapsed;
+        // elapsed = now - last_publish_inst;
+        // remaining = interval_sec - elapsed;
         // if (remaining > 0)
         // {
         //     LOG_INFO("Instataneous Data will publish in %d minutes", remaining / 60);
@@ -241,9 +246,15 @@ void *mqtt_worker_thread(void *arg)
                 }
             }
         }
+
+        if (check_redis_resp == 1)
+        {
+            read_redis_resp(current_active);
+        }
+
         // interval_sec = current_active->cfg.dlms_data_pub_interval * 60;
-        // elapsed      = now - last_publish_profile;
-        // remaining    = interval_sec - elapsed;
+        // elapsed = now - last_publish_profile;
+        // remaining = interval_sec - elapsed;
         // if (remaining > 0)
         // {
         //     LOG_INFO("Meter Profile Data will publish in %d minutes", remaining / 60);
@@ -273,9 +284,14 @@ void *mqtt_worker_thread(void *arg)
             }
         }
 
+        if (check_redis_resp == 1)
+        {
+            read_redis_resp(current_active);
+        }
+
         // interval_sec = current_active->cfg.hc_pub_interval * 60;
-        // elapsed      = now - last_publish_hc;
-        // remaining    = interval_sec - elapsed;
+        // elapsed = now - last_publish_hc;
+        // remaining = interval_sec - elapsed;
         // if (remaining > 0)
         // {
         //     LOG_INFO("Health check messages will publish in %d minutes", remaining / 60);
@@ -291,11 +307,16 @@ void *mqtt_worker_thread(void *arg)
             mqtt_send_msg(current_active, xml_buf, file_Size, HEALTH_DATA_TOPIC);
         }
 
+        if (check_redis_resp == 1)
+        {
+            read_redis_resp(current_active);
+        }
+
         // Publish modbus messaged ---> 08/04/2026
         // LOG_INFO("Modbbus messages will Publish in %d minutes",current_active->cfg.modbus_data_pub_interval-(now - last_publish_modbus));
         // interval_sec = current_active->cfg.modbus_data_pub_interval * 60;
-        // elapsed      = now - last_publish_modbus;
-        // remaining    = interval_sec - elapsed;
+        // elapsed = now - last_publish_modbus;
+        // remaining = interval_sec - elapsed;
         // if (remaining > 0)
         // {
         //     LOG_INFO("Modbus messages will publish in %d minutes", remaining / 60);
@@ -561,48 +582,10 @@ void mqtt_module_start()
     pthread_t worker;
     pthread_create(&worker, NULL, mqtt_worker_thread, NULL);
 }
-/* This function will handle the closing broker connections of both primary and secondary -- 27/04/2026 */
-void mqtt_cleanup()
-{
-    LOG_INFO("Cleaning up MQTT connections...");
-
-    if (primary.client)
-    {
-        MQTTAsync_disconnectOptions disc_opts =
-            MQTTAsync_disconnectOptions_initializer;
-
-        MQTTAsync_disconnect(primary.client, &disc_opts);
-        MQTTAsync_destroy(&primary.client);
-        primary.client = NULL;
-    }
-
-    if (secondary.client)
-    {
-        MQTTAsync_disconnectOptions disc_opts =
-            MQTTAsync_disconnectOptions_initializer;
-
-        MQTTAsync_disconnect(secondary.client, &disc_opts);
-        MQTTAsync_destroy(&secondary.client);
-        secondary.client = NULL;
-    }
-
-    LOG_INFO("MQTT cleanup completed");
-}
-
-void handle_signal(int sig)
-{
-    LOG_INFO("Received signal %d, shutting down...", sig);
-    stop_flag = 0;
-}
-
 
 int main()
 {
 
-    //Signal Handling for MQTT Process -- Gokul added this 27/04/2026
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
-    //signal(SIGQUIT, handle_signal);
     if (log_init() != 0)
     {
         fprintf(stderr, "WARNING: Logging unavailable, continuing without log file.\n");
@@ -624,15 +607,12 @@ int main()
 
     mqtt_module_start();
 
-    // while (1)
-    while(stop_flag)
+    while (1)
     {
         // rithika 16April2026
         iec104_log_sink_poll_network();
         sleep(1);
     }
-
-    mqtt_cleanup(); //Gokul added the mqtt cleanup function to shut down the process gracefully..!! 27/04/2026
 
     redisFree(ctx);
 
