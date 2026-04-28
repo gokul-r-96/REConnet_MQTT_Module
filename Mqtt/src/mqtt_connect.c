@@ -898,7 +898,7 @@ printf("cmd_resp %s\n",cmd_resp);
             continue;
         }
 
-        cJSON *data_type = cJSON_GetObjectItemCaseSensitive(root, "msgType");
+        cJSON *data_type = cJSON_GetObjectItemCaseSensitive(root, "msg_type");
 
         if (cJSON_IsString(data_type) && data_type->valuestring != NULL)
         {
@@ -908,7 +908,7 @@ printf("cmd_resp %s\n",cmd_resp);
                 ls_cmd_redis_resp = 1;
             }
         }
-        cJSON *startdate = cJSON_GetObjectItemCaseSensitive(data, "startdate");
+        cJSON *startdate = cJSON_GetObjectItemCaseSensitive(data, "start_date");
 
         if (cJSON_IsString(startdate) && startdate->valuestring != NULL)
         {
@@ -926,7 +926,9 @@ printf("cmd_resp %s\n",cmd_resp);
 
         cJSON_Delete(root);
     }
-LOG_INFO("read_redis_resp meter_ser %s start_date %s ls_cmd_redis_resp %d", meter_ser, start_date, ls_cmd_redis_resp);
+    
+    LOG_INFO("read_redis_resp meter_ser %s start_date %s ls_cmd_redis_resp %d", meter_ser, start_date, ls_cmd_redis_resp);
+    
     if (ls_cmd_redis_resp == 1)
     {
         cdf_result_t res = generate_profile_cdf(ctx, meter_ser, start_date, "all");

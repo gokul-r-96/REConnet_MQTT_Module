@@ -259,7 +259,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     }
     else
     {
-
         snprintf(table, sizeof(table), "ls_data_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
     }

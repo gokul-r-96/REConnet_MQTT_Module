@@ -211,7 +211,8 @@ void *mqtt_worker_thread(void *arg)
                 mqtt_connect(&secondary);
             }
         }
-printf("check_redis_resp %d\n",check_redis_resp);
+        printf("check_redis_resp %d\n\n",check_redis_resp);
+        
         if (check_redis_resp == 1)
         {
             read_redis_resp(current_active);
