@@ -1111,7 +1111,7 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     int rc1 = generate_load_profile_cdf(ctx, serial, date, ls_file_name);
     if (rc1 != 0)
     {
-        return result;
+        // return result;  //rithika commented 28/04/2026
     }
 
     int y, m, d;
@@ -1128,19 +1128,19 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     int rc2 = generate_billing_cdf(ctx, serial, bill_date, billing_file_name);
     if (rc2 != 0)
     {
-        return result;
+        // return result; //rithika commented 28/04/2026
     }
 
     int rc3 = generate_midnight_cdf(ctx, serial, date, mn_file_name);
     if (rc3 != 0)
     {
-        return result;
+        // return result; //rithika commented 28/04/2026
     }
 
     int rc4 = generate_event_log_cdf(ctx, serial, date, event_type, event_file_name);
     if (rc4 != 0)
     {
-        return result;
+        // return result; //rithika commented 28/04/2026 
     }
 
     char output_file_name[64];
@@ -1151,8 +1151,8 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
                           ls_file_name,
                           mn_file_name,
                           event_file_name,
-                          billing_file_name) != 0)
-        return result;
+                          billing_file_name) != 0);
+        // return result; //rithika commented 28/04/2026
 
     // rithika 18Apr2026
     char file_rem_cmd[128];

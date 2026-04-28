@@ -910,10 +910,9 @@ int read_redis_resp(mqtt_conn_t *conn)
             {
                 printf("111111111111111111111111\n");
                 ls_cmd_redis_resp = 1;
-                 billing_cmd_redis_resp = 1;
- event_cmd_redis_resp = 1;
- midnight_cmd_redis_resp = 1;
-
+                billing_cmd_redis_resp = 1;
+                event_cmd_redis_resp = 1;
+                midnight_cmd_redis_resp = 1;
             }
         }
         cJSON *startdate = cJSON_GetObjectItemCaseSensitive(data, "start_date");
@@ -952,7 +951,7 @@ int read_redis_resp(mqtt_conn_t *conn)
             // char file_rem_cmd[128];
             // sprintf(file_rem_cmd, "rm %s", res.filename);
             // system(file_rem_cmd);
-            // remove(res.filename);
+            remove(res.filename);
             LOG_INFO("%s is deleted successfully", res.filename);
 
             msg_size = success_resp_msg(cpy_cmd, output_msg);

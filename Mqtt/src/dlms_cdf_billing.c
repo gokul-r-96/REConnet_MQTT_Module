@@ -402,7 +402,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
         if (read_billing_data(SQLITE_DB_PATH, &status, serial, curr_year, ctx, &bill_data_curr) != 0)
         {
             LOG_ERROR("Cannot read billing data for meter %s year-month %s", serial, curr_year);
-            return -1;
+            // return -1;
         }
     }
 
