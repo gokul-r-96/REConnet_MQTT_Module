@@ -624,6 +624,11 @@ int main()
 {
 
     printf("mqtt\n");
+     //Signal Handling for MQTT Process -- Gokul added this 27/04/2026
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    //signal(SIGQUIT, handle_signal);
+    printf("MQTT Process started\n");//Gokul added
     if (log_init() != 0)
     {
         fprintf(stderr, "WARNING: Logging unavailable, continuing without log file.\n");
