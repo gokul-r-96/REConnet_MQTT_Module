@@ -623,11 +623,6 @@ void handle_signal(int sig)
 int main()
 {
 
-    //Signal Handling for MQTT Process -- Gokul added this 27/04/2026
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
-    //signal(SIGQUIT, handle_signal);
-    
     if (log_init() != 0)
     {
         fprintf(stderr, "WARNING: Logging unavailable, continuing without log file.\n");
