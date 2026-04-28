@@ -1,5 +1,7 @@
 
 #include "../include/general.h"
+
+extern int event_cmd_redis_resp;
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
     {1, "Voltage events", "0_0_96_11_0_255", "0_0_99_98_0_255"},
@@ -96,8 +98,17 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
 
     /* Build table name */
     char table[128];
-    snprintf(table, sizeof(table), "event_data_%s_%s_%s_%s",
-             status->manuf_key, status->dcu_serial, status->port, serial);
+
+    if (event_cmd_redis_resp == 1)
+    {
+        snprintf(table, sizeof(table), "event_data_od_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+    }
+    else
+    {
+        snprintf(table, sizeof(table), "event_data_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+    }
 
     LOG_INFO("Opening SQLite DB: %s, table: %s", db_path, table);
 
@@ -370,19 +381,20 @@ static void cdf_write_d5(FILE *fp, redisContext *ctx, const EventData *event_dat
                 //         name = item->valuestring;
                 //     }
                 // }
-                if(p->param_name[0] != '\0'){
-                fprintf(fp,
-                        "\t\t\t\t<SNAPSHOT"
-                        " CODE=\"%s\""
-                        " OBIS_CODE=\"%s\""
-                        " NAME=\"%s\""
-                        " VALUE=\"%s\""
-                        " UNIT=\"%s\"/>\n",
-                        p->param_code,
-                        p->obis_hex,
-                        p->param_name, // name,
-                        p->value,
-                        p->unit);
+                if (p->param_name[0] != '\0')
+                {
+                    fprintf(fp,
+                            "\t\t\t\t<SNAPSHOT"
+                            " CODE=\"%s\""
+                            " OBIS_CODE=\"%s\""
+                            " NAME=\"%s\""
+                            " VALUE=\"%s\""
+                            " UNIT=\"%s\"/>\n",
+                            p->param_code,
+                            p->obis_hex,
+                            p->param_name, // name,
+                            p->value,
+                            p->unit);
                 }
             }
         }
@@ -428,14 +440,12 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
                         ctx, &event_data) != 0)
     {
         LOG_ERROR("Cannot read event data for meter %s", serial);
-        
     }
 
     if (event_data.entry_count == 0)
     {
         LOG_WARN("No event data found for meter %s", serial);
         // event_data_free(&event_data);
-       
     }
 
     /* 3. Build output file path */
@@ -447,7 +457,7 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
 
     char out_path[512];
     snprintf(out_path, sizeof(out_path),
-             "%sCDF_EVENT_%s_%s_%s.xml",CDF_OUTPUT_DIR, serial, date, event_type);
+             "%sCDF_EVENT_%s_%s_%s.xml", CDF_OUTPUT_DIR, serial, date, event_type);
 
     FILE *fp = fopen(out_path, "w");
     if (!fp)

@@ -1,6 +1,8 @@
 
 
 #include "../include/general.h"
+
+extern int billing_cmd_redis_resp;
 /* ============================================================
  *  Billing data helpers
  * ============================================================ */
@@ -70,9 +72,16 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
 
     /* Build table name */
     char table[128];
-    snprintf(table, sizeof(table), "bill_data_%s_%s_%s_%s",
+    if (billing_cmd_redis_resp == 1)
+    {
+    snprintf(table, sizeof(table), "bill_data_od_%s_%s_%s_%s",
              status->manuf_key, status->dcu_serial, status->port, serial);
-
+    }
+    else{
+        snprintf(table, sizeof(table), "bill_data_%s_%s_%s_%s",
+             status->manuf_key, status->dcu_serial, status->port, serial);
+    
+    }
     LOG_INFO("Opening SQLite DB: %s, table: %s", db_path, table);
 
     sqlite3 *db = NULL;

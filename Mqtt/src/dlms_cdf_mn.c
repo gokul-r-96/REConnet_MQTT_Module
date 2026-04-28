@@ -1,6 +1,7 @@
 
 #include "../include/general.h"
 
+extern int midnight_cmd_redis_resp;
 /**
  * @brief Lookup MN param code, name and unit for a given OBIS from Redis.
  *
@@ -65,8 +66,17 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
 
     /* Build table name */
     char table[128];
-    snprintf(table, sizeof(table), "daily_profile_data_%s_%s_%s_%s",
-             status->manuf_key, status->dcu_serial, status->port, serial);
+
+    if (midnight_cmd_redis_resp == 1)
+    {
+        snprintf(table, sizeof(table), "daily_profile_data_od_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+    }
+    else
+    {
+        snprintf(table, sizeof(table), "daily_profile_data_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+    }
 
     LOG_INFO("Opening SQLite DB: %s, table: %s", db_path, table);
 
@@ -309,7 +319,7 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
 
     char out_path[512];
     snprintf(out_path, sizeof(out_path),
-             "%sCDF_MN_%s_%s.xml",CDF_OUTPUT_DIR, serial, date);
+             "%sCDF_MN_%s_%s.xml", CDF_OUTPUT_DIR, serial, date);
 
     FILE *fp = fopen(out_path, "w");
     if (!fp)

@@ -19,6 +19,10 @@ int current_active_primary = -1;
 int current_active_secondary = -1;
 
 int ls_cmd_redis_resp = 0;
+int billing_cmd_redis_resp = 0;
+int event_cmd_redis_resp = 0;
+int midnight_cmd_redis_resp = 0;
+
 int check_redis_resp = 0;
 /* Connection callbacks */
 cmd_request_t cpy_cmd;
@@ -855,8 +859,8 @@ int is_list_empty()
 int read_redis_resp(mqtt_conn_t *conn)
 {
     int count = is_list_empty();
-    char start_date[32];
-    char meter_ser[64];
+    char start_date[32] = {0};
+    char meter_ser[64] = {0};
     char output_msg[PAYLOAD_BUFFER_SIZE] = {0};
     int msg_size = 0;
 
@@ -880,7 +884,7 @@ int read_redis_resp(mqtt_conn_t *conn)
         }
 
         char *cmd_resp = rly->str;
-printf("cmd_resp %s\n",cmd_resp);
+        printf("cmd_resp %s\n", cmd_resp);
         cJSON *root = cJSON_Parse(cmd_resp);
         freeReplyObject(rly);
 
@@ -906,14 +910,21 @@ printf("cmd_resp %s\n",cmd_resp);
             {
                 printf("111111111111111111111111\n");
                 ls_cmd_redis_resp = 1;
+                 billing_cmd_redis_resp = 1;
+ event_cmd_redis_resp = 1;
+ midnight_cmd_redis_resp = 1;
+
             }
         }
         cJSON *startdate = cJSON_GetObjectItemCaseSensitive(data, "start_date");
 
         if (cJSON_IsString(startdate) && startdate->valuestring != NULL)
         {
-
-            snprintf(start_date, sizeof(start_date), "%s", startdate->valuestring);
+            int day, month, year;
+            if (sscanf(startdate->valuestring, "%d-%d-%d", &day, &month, &year) == 3)
+            {
+                snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+            }
         }
 
         cJSON *meter_ser_no = cJSON_GetObjectItemCaseSensitive(data, "meter");
@@ -926,9 +937,9 @@ printf("cmd_resp %s\n",cmd_resp);
 
         cJSON_Delete(root);
     }
-    
+
     LOG_INFO("read_redis_resp meter_ser %s start_date %s ls_cmd_redis_resp %d", meter_ser, start_date, ls_cmd_redis_resp);
-    
+
     if (ls_cmd_redis_resp == 1)
     {
         cdf_result_t res = generate_profile_cdf(ctx, meter_ser, start_date, "all");
@@ -941,7 +952,7 @@ printf("cmd_resp %s\n",cmd_resp);
             // char file_rem_cmd[128];
             // sprintf(file_rem_cmd, "rm %s", res.filename);
             // system(file_rem_cmd);
-            remove(res.filename);
+            // remove(res.filename);
             LOG_INFO("%s is deleted successfully", res.filename);
 
             msg_size = success_resp_msg(cpy_cmd, output_msg);
