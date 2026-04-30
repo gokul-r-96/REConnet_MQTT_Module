@@ -18,6 +18,10 @@
 #include "../include/general.h"
 
 extern int ls_cmd_redis_resp;
+extern int billing_cmd_redis_resp;
+extern int event_cmd_redis_resp;
+extern int midnight_cmd_redis_resp ;
+
 /* ============================================================
  *  OBIS parameter mapping
  * ============================================================ */
@@ -59,6 +63,28 @@ static void map_manufacturer_key(const char *manuf_str, char *manuf_key, size_t 
         snprintf(manuf_key, key_len, "unknown");
         LOG_WARN("Unknown manufacturer: %s", manuf_str);
     }
+}
+
+int drop_table(const char *table_name, sqlite3 *db)
+{
+    char *err_msg = 0;
+    char sql[256];
+
+    // Prepare SQL query to drop the table
+    snprintf(sql, sizeof(sql), "DROP TABLE IF EXISTS %s;", table_name);
+
+    // Execute the SQL query
+    int rc = sqlite3_exec(db, sql, 0, 0, &err_msg);
+    if (rc != SQLITE_OK)
+    {
+        printf("SQL error: %s\n", err_msg);
+        sqlite3_free(err_msg);
+
+        return rc;
+    }
+
+    printf("Table %s dropped successfully\n", table_name);
+    return SQLITE_OK;
 }
 
 /* ============================================================
@@ -252,7 +278,7 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (ls_cmd_redis_resp == 1)
+    if (ls_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "ls_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -383,6 +409,12 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     day_profile->interval_count = interval_idx;
 
     sqlite3_finalize(stmt);
+
+    if (strstr(table, "od_"))
+    {
+        drop_table(table, db);
+    }
+
     sqlite3_close(db);
 
     LOG_INFO("Meter %s date %s: loaded %d intervals from DB",

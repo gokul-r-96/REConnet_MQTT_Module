@@ -3,6 +3,9 @@
 #include "../include/general.h"
 
 extern int billing_cmd_redis_resp;
+extern int event_cmd_redis_resp;
+extern int ls_cmd_redis_resp ;
+extern int midnight_cmd_redis_resp ;
 /* ============================================================
  *  Billing data helpers
  * ============================================================ */
@@ -72,15 +75,17 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
 
     /* Build table name */
     char table[128];
-    if (billing_cmd_redis_resp == 1)
+    static char od_table[128] = {0};
+    if (billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1)
     {
-    snprintf(table, sizeof(table), "bill_data_od_%s_%s_%s_%s",
-             status->manuf_key, status->dcu_serial, status->port, serial);
+        snprintf(table, sizeof(table), "bill_data_od_%s_%s_%s_%s",
+                 status->manuf_key, status->dcu_serial, status->port, serial);
+        snprintf(od_table, sizeof(od_table), "%s", table);
     }
-    else{
+    else
+    {
         snprintf(table, sizeof(table), "bill_data_%s_%s_%s_%s",
-             status->manuf_key, status->dcu_serial, status->port, serial);
-    
+                 status->manuf_key, status->dcu_serial, status->port, serial);
     }
     LOG_INFO("Opening SQLite DB: %s, table: %s", db_path, table);
 
@@ -207,6 +212,13 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
     bill_data->entry_count = entry_idx;
 
     sqlite3_finalize(stmt);
+
+    if ( billing_cmd_redis_resp == 0 && od_table[0] != '\0')
+    {
+        LOG_INFO("Deleting od table %s",od_table);
+        drop_table(od_table, db);
+    }
+
     sqlite3_close(db);
 
     LOG_INFO("Meter %s year-month %s: loaded %d billing entries from DB",
@@ -284,19 +296,20 @@ static void cdf_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_da
             //     }
             // }
 
-            if(p->param_name[0] != '\0'){
-            fprintf(fp,
-                    "\t\t\t\t<PROFILE"
-                    " CODE=\"%s\""
-                    " OBIS_CODE=\"%s\""
-                    " NAME=\"%s\""
-                    " VALUE=\"%s\""
-                    " UNIT=\"%s\"/>\n",
-                    p->param_code,
-                    p->obis_hex,
-                    p->param_name, // name,
-                    p->value,
-                    p->unit);
+            if (p->param_name[0] != '\0')
+            {
+                fprintf(fp,
+                        "\t\t\t\t<PROFILE"
+                        " CODE=\"%s\""
+                        " OBIS_CODE=\"%s\""
+                        " NAME=\"%s\""
+                        " VALUE=\"%s\""
+                        " UNIT=\"%s\"/>\n",
+                        p->param_code,
+                        p->obis_hex,
+                        p->param_name, // name,
+                        p->value,
+                        p->unit);
             }
         }
 
@@ -324,19 +337,20 @@ static void cdf_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_da
             //     }
             // }
 
-            if(p->param_name[0] != '\0'){
-            fprintf(fp,
-                    "\t\t\t\t<PROFILE"
-                    " CODE=\"%s\""
-                    " OBIS_CODE=\"%s\""
-                    " NAME=\"%s\""
-                    " VALUE=\"%s\""
-                    " UNIT=\"%s\"/>\n",
-                    p->param_code,
-                    p->obis_hex,
-                    p->param_name, // name,
-                    p->value,
-                    p->unit);
+            if (p->param_name[0] != '\0')
+            {
+                fprintf(fp,
+                        "\t\t\t\t<PROFILE"
+                        " CODE=\"%s\""
+                        " OBIS_CODE=\"%s\""
+                        " NAME=\"%s\""
+                        " VALUE=\"%s\""
+                        " UNIT=\"%s\"/>\n",
+                        p->param_code,
+                        p->obis_hex,
+                        p->param_name, // name,
+                        p->value,
+                        p->unit);
             }
         }
 

@@ -809,36 +809,69 @@ int generate_redis_list(cmd_request_t cmd)
         return -1;
     }
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "seq_no", cmd.transaction);
-    cJSON_AddStringToObject(root, "msgType", "OD_LS_DATA");
-    cJSON_AddStringToObject(root, "init_source", "mqtt");
-
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddStringToObject(data, "startdate", "26-04-2026");
-    cJSON_AddStringToObject(data, "port_id", status.port);
-    cJSON_AddStringToObject(data, "num_days", "1");
-    cJSON_AddStringToObject(data, "meter", cmd.args[1]);
-
-    cJSON_AddItemToObject(root, "data", data);
-
-    char *json_str = cJSON_Print(root);
-    redisReply *reply = redisCommand(ctx, "LPUSH web_od_command %s", json_str);
-
-    if (reply == NULL)
+    for (int i = 0; i < 4; i++)
     {
-        fprintf(stderr, "Redis command failed\n");
+        cJSON *root = cJSON_CreateObject();
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "seq_no", cmd.transaction);
 
-        return -1;
+        if (i == 0)
+        {
+            cJSON_AddStringToObject(root, "msgType", "OD_LS_DATA");
+            cJSON_AddStringToObject(data, "startdate", cmd.args[2]); // 30-03-2026 format
+        }
+        else if (i == 1)
+        {
+
+            int day, month, year;
+            char mn_date[32] = {0};
+
+            if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+            {
+                snprintf(mn_date, sizeof(mn_date), "%d_%d", month, year);
+            }
+
+            cJSON_AddStringToObject(root, "msgType", "OD_MN_DATA");
+            cJSON_AddStringToObject(data, "startdate", mn_date);
+        }
+        else if (i == 2)
+        {
+            cJSON_AddStringToObject(root, "msgType", "OD_EVENT_DATA");
+            cJSON_AddStringToObject(data, "startdate", "10");
+            cJSON_AddStringToObject(data, "event_type", "all");
+        }
+        else if (i == 3)
+        {
+            cJSON_AddStringToObject(root, "msgType", "OD_BILL_DATA");
+            cJSON_AddStringToObject(data, "startdate", "current"); // 30-03-2026 format
+        }
+
+        cJSON_AddStringToObject(root, "init_source", "mqtt");
+
+        cJSON_AddStringToObject(data, "port_id", status.port);
+        cJSON_AddStringToObject(data, "num_days", "1");
+        cJSON_AddStringToObject(data, "meter", cmd.args[1]);
+
+        cJSON_AddItemToObject(root, "data", data);
+
+        char *json_str = cJSON_Print(root);
+        redisReply *reply = redisCommand(ctx, "LPUSH web_od_command %s", json_str);
+
+        if (reply == NULL)
+        {
+            fprintf(stderr, "Redis command failed\n");
+
+            return -1;
+        }
+        else
+        {
+
+            freeReplyObject(reply);
+        }
+
+        cJSON_Delete(root);
+        free(json_str);
     }
-    else
-    {
-
-        freeReplyObject(reply);
-    }
-
-    cJSON_Delete(root);
-    free(json_str);
 }
 
 int is_list_empty()
@@ -859,12 +892,12 @@ int is_list_empty()
 int read_redis_resp(mqtt_conn_t *conn)
 {
     int count = is_list_empty();
-    char start_date[32] = {0};
+    static char start_date[32] = {0};
     char meter_ser[64] = {0};
     char output_msg[PAYLOAD_BUFFER_SIZE] = {0};
     int msg_size = 0;
 
-    if (count < 0)
+    if (count == 0)
     {
         return -1;
     }
@@ -908,21 +941,34 @@ int read_redis_resp(mqtt_conn_t *conn)
         {
             if (strcmp(data_type->valuestring, "OD_LS_DATA") == 0)
             {
-                printf("111111111111111111111111\n");
                 ls_cmd_redis_resp = 1;
-                billing_cmd_redis_resp = 1;
-                event_cmd_redis_resp = 1;
+            }
+
+            else if (strcmp(data_type->valuestring, "OD_MN_DATA") == 0)
+            {
                 midnight_cmd_redis_resp = 1;
             }
-        }
-        cJSON *startdate = cJSON_GetObjectItemCaseSensitive(data, "start_date");
-
-        if (cJSON_IsString(startdate) && startdate->valuestring != NULL)
-        {
-            int day, month, year;
-            if (sscanf(startdate->valuestring, "%d-%d-%d", &day, &month, &year) == 3)
+            else if (strcmp(data_type->valuestring, "OD_EVENT_DATA") == 0)
             {
-                snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+                event_cmd_redis_resp = 1;
+            }
+            else if (strcmp(data_type->valuestring, "OD_BILL_DATA") == 0)
+            {
+                billing_cmd_redis_resp = 1;
+            }
+        }
+
+        if (strcmp(data_type->valuestring, "OD_LS_DATA") == 0)
+        {
+            cJSON *startdate = cJSON_GetObjectItemCaseSensitive(data, "start_date");
+
+            if (cJSON_IsString(startdate) && startdate->valuestring != NULL)
+            {
+                int day, month, year;
+                if (sscanf(startdate->valuestring, "%d-%d-%d", &day, &month, &year) == 3)
+                {
+                    snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+                }
             }
         }
 
@@ -939,7 +985,7 @@ int read_redis_resp(mqtt_conn_t *conn)
 
     LOG_INFO("read_redis_resp meter_ser %s start_date %s ls_cmd_redis_resp %d", meter_ser, start_date, ls_cmd_redis_resp);
 
-    if (ls_cmd_redis_resp == 1)
+    if (ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1)
     {
         cdf_result_t res = generate_profile_cdf(ctx, meter_ser, start_date, "all");
         if (res.status == 0)
@@ -959,6 +1005,9 @@ int read_redis_resp(mqtt_conn_t *conn)
         }
         check_redis_resp = 0;
         ls_cmd_redis_resp = 0;
+        midnight_cmd_redis_resp = 0;
+        event_cmd_redis_resp = 0;
+        billing_cmd_redis_resp = 0;
     }
     return 0;
 }

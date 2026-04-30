@@ -2,6 +2,10 @@
 #include "../include/general.h"
 
 extern int event_cmd_redis_resp;
+extern int ls_cmd_redis_resp ;
+extern int billing_cmd_redis_resp ; 
+extern int midnight_cmd_redis_resp ;
+
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
     {1, "Voltage events", "0_0_96_11_0_255", "0_0_99_98_0_255"},
@@ -99,7 +103,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (event_cmd_redis_resp == 1)
+    if (event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 )
     {
         snprintf(table, sizeof(table), "event_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -158,9 +162,18 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
 
     /* Build query */
     char query[1024];
-    snprintf(query, sizeof(query),
-             "SELECT * FROM %s %s ORDER BY \"0_0_1_0_0_255\" ASC",
-             table, where_clause);
+    if (event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
+    {
+        snprintf(query, sizeof(query),
+                 "SELECT * FROM %s ORDER BY \"0_0_1_0_0_255\" ASC",
+                 table);
+    }
+    else
+    {
+        snprintf(query, sizeof(query),
+                 "SELECT * FROM %s %s ORDER BY \"0_0_1_0_0_255\" ASC",
+                 table, where_clause);
+    }
 
     LOG_DEBUG("SQL query: %s", query);
 
@@ -303,6 +316,12 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     event_data->entry_count = entry_idx;
 
     sqlite3_finalize(stmt);
+
+    if (strstr(table, "od_"))
+    {
+        drop_table(table, db);
+    }
+
     sqlite3_close(db);
 
     LOG_INFO("Meter %s: loaded %d event entries", serial, event_data->entry_count);

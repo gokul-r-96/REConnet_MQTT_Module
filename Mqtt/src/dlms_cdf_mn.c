@@ -2,6 +2,10 @@
 #include "../include/general.h"
 
 extern int midnight_cmd_redis_resp;
+extern int ls_cmd_redis_resp;
+extern int billing_cmd_redis_resp;
+extern int event_cmd_redis_resp;
+
 /**
  * @brief Lookup MN param code, name and unit for a given OBIS from Redis.
  *
@@ -67,7 +71,7 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (midnight_cmd_redis_resp == 1)
+    if (midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "daily_profile_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -191,6 +195,12 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
     snapshot->param_count = param_idx;
 
     sqlite3_finalize(stmt);
+
+    if (strstr(table, "od_"))
+    {
+        drop_table(table, db);
+    }
+
     sqlite3_close(db);
 
     LOG_INFO("Meter %s date %s: loaded midnight snapshot with %d parameters",

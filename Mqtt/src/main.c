@@ -300,6 +300,8 @@ void *mqtt_worker_thread(void *arg)
         // }
         if (current_active && (time(NULL) - last_publish_hc >= current_active->cfg.hc_pub_interval * 60))
         {
+            load_active_meters(ctx);
+            
             last_publish_hc = time(NULL);
             char xml_buf[PAYLOAD_BUFFER_SIZE];
             int file_Size;
@@ -653,8 +655,6 @@ void handle_signal(int sig)
 
 int main()
 {
-
-    printf("mqtt\n");
      //Signal Handling for MQTT Process -- Gokul added this 27/04/2026
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
