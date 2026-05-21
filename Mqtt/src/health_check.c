@@ -48,7 +48,7 @@ int send_hc_msg()
 
     char *base_name = basename(name);
 
-    sprintf(temp_buff, "%s_hc_up_time ", base_name);
+    sprintf(temp_buff, "%s_hc_up_time", base_name);
     hc_update(ctx, temp_buff);
 
     return 0;

@@ -21,7 +21,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
-
+#include "../include/general.h"
 /* Max limits — must match module config headers */
 #define MAX_DEVICES         32
 #define MAX_REGS_PER_DEV    128
@@ -204,7 +204,7 @@ static void jbuf_append_numeric_value(jbuf_t *jb, const char *val_str)
 static void export_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
 {
     const char *key = "dcu_info";
-    char dcu_name[128], dcu_sernum[128];
+    char dcu_name[128], dcu_sernum[128], dcu_loc[128];
     char attr1[128], attr2[128], attr3[128], attr4[128], attr5[128];
 
     // rget_str(ctx, key, "dcu_name",   dcu_name,   sizeof(dcu_name));
@@ -216,16 +216,19 @@ static void export_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
     // rget_str(ctx, key, "attr5",      attr5,       sizeof(attr5));
 
     //Gokul added the below fields from redis ---> 08/04/2026
-    rget_str(ctx, key, "device_name",   dcu_name,   sizeof(dcu_name));
-    rget_str(ctx, key, "serial_num", dcu_sernum,  sizeof(dcu_sernum));
-    rget_str(ctx, key, "dcu_uptime",      attr1,       sizeof(attr1));
-    rget_str(ctx, key, "updatetime",      attr2,       sizeof(attr2));
-    rget_str(ctx, key, "device_type",      attr3,       sizeof(attr3));
-    rget_str(ctx, key, "fw_ver",      attr4,       sizeof(attr4));
+    // rget_str(ctx, key, "device_name",   dcu_name,   sizeof(dcu_name));
+    rget_str(ctx, key, "device", dcu_name, sizeof(dcu_name));
+    rget_str(ctx, key, "serial_num", dcu_sernum,sizeof(dcu_sernum));
+    rget_str(ctx, key, "dcu_uptime", attr1, sizeof(attr1));
+    // rget_str(ctx, key, "updatetime",      attr2,       sizeof(attr2));
+    rget_str(ctx, key, "model", attr3, sizeof(attr3));
+    rget_str(ctx, key, "dcu_loc",dcu_loc, sizeof(dcu_loc));
+    rget_str(ctx, key, "fw_ver", attr4,sizeof(attr4));
 
     /* Current date/time */
     char datetime[32];
-    time_t now = time(NULL);
+    // time_t now = time(NULL);
+    time_t now = monotonic_sec();
     struct tm tm_buf;
     localtime_r(&now, &tm_buf);
     strftime(datetime, sizeof(datetime), "%Y-%m-%d %H:%M:%S", &tm_buf);
@@ -234,8 +237,9 @@ static void export_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
     jbuf_append(jb, "    \"dcu_name\":"); jbuf_append_escaped(jb, dcu_name);   jbuf_append(jb, ",\n");
     jbuf_append(jb, "    \"dcu_sernum\":"); jbuf_append_escaped(jb, dcu_sernum); jbuf_append(jb, ",\n");
     jbuf_append(jb, "    \"dcu_uptime\":"); jbuf_append_escaped(jb, attr1); jbuf_append(jb, ",\n");
-    jbuf_append(jb, "    \"updatetime\":"); jbuf_append_escaped(jb, attr2); jbuf_append(jb, ",\n");
+    // jbuf_append(jb, "    \"updatetime\":"); jbuf_append_escaped(jb, attr2); jbuf_append(jb, ",\n");
     jbuf_append(jb, "    \"device_type\":"); jbuf_append_escaped(jb, attr3); jbuf_append(jb, ",\n");
+    jbuf_append(jb, "    \"dcu_location\":"); jbuf_append_escaped(jb, dcu_loc); jbuf_append(jb, ",\n");
     jbuf_append(jb, "    \"fw_ver\":"); jbuf_append_escaped(jb, attr4); jbuf_append(jb, ",\n");
     // jbuf_append(jb, "    \"attr5\":"); jbuf_append_escaped(jb, attr5); jbuf_append(jb, ",\n");
     jbuf_append(jb, "    \"date_time\":"); jbuf_append_escaped(jb, datetime); jbuf_append(jb, "\n");

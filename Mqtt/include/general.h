@@ -58,7 +58,7 @@
 
 /** Log file configuration */
 #define LOG_DIR                 "/usr/cms/log/"
-#define LOG_FILE_BASE           "dlms_cdf_gen"
+#define LOG_FILE_BASE           "mqtt_proc"
 #define LOG_FILE_EXT            ".log"
 #define LOG_MAX_SIZE_BYTES      (1024 * 1024)   /**< Rotate at 1 MB  */
 #define LOG_MAX_FILES           5               /**< Keep 5 rotated files */
@@ -509,7 +509,21 @@ int on_message_arrived(void *context,
                        int topicLen,
                        MQTTAsync_message *message);
 int success_resp_msg_cdf(redisContext *ctx, resp_msg resp, char *out_buf);
+#ifndef MONOTONIC_SEC_DEFINED
+#define MONOTONIC_SEC_DEFINED
 
+#include <time.h>
+
+static inline time_t monotonic_sec(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return ts.tv_sec;
+}
+
+#endif
 
 /* ================= Public APIs ================= */
 

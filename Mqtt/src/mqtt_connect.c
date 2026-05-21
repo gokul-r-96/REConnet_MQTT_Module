@@ -1,15 +1,19 @@
 #include <stdio.h>
 #include "../include/general.h"
+#include <pthread.h>
 // #include "logger.h"
 
 #define MQTT_1_CERTS_LOC "/usr/cms/config/mqtt_1_certs"
 #define MQTT_2_CERTS_LOC "/usr/cms/config/mqtt_2_certs"
+
 
 extern int certificate_path_check_primary;
 extern int certificate_path_check_secondary;
 extern char meter_serials[MAX_METERS][32];
 extern int meter_count;
 extern char dcu_ser_num[SIZE_32];
+extern secondary_connecting;
+extern primary_connecting;
 // rithika 02april2026
 extern redisContext *ctx;
 extern int cur_active_mqtt;
@@ -27,18 +31,68 @@ int check_redis_resp = 0;
 /* Connection callbacks */
 cmd_request_t cpy_cmd;
 
+volatile int mqtt_status_update_req = 0;
+char mqtt_status_value[16];
+
+// Gokul added the time updation for mqtt --> 05/05/2026
+volatile int mqtt_time_update_req = 0;
+char mqtt_time_uptime[64];
+char mqtt_time_lastmsg[32];
+int mqtt_time_active = -1; // 0=primary, 1=secondary, -1=none
+int mqtt_time_update_last = 0;
+
+int primary_need_destroy = 0;
+int secondary_need_destroy = 0;
+
+time_t primary_destroy_time = 0;
+time_t secondary_destroy_time = 0;
+
+extern time_t last_primary_try;
+extern time_t last_secondary_try;
+
+time_t primary_lost_time = 0;
+time_t secondary_lost_time = 0;
+
+extern time_t last_publish_inst;
+extern time_t last_publish_profile;
+extern time_t last_publish_hc;
+extern time_t last_publish_modbus;
+
+pthread_mutex_t mqtt_api_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+
+
+
+
 static void on_connect_success(void *mqtt_ctx,
                                MQTTAsync_successData *resp)
 {
     mqtt_conn_t *conn = mqtt_ctx;
     conn->connected = true;
     LOG_INFO("[MQTT] Connected to %s ", conn->cfg.broker_ip);
+    if (conn == &primary)
+        primary_connecting = 0;
+    else if (conn == &secondary)
+        secondary_connecting = 0;
 
     /* -------- PRIMARY ALWAYS PREFERRED -------- */
     if (conn == &primary)
     {
 
         current_active = &primary;
+        /* Reset publish scheduler after broker switch */
+        /* Gokul added the below time resetting when it switches to another broker --> 14/05/2026 */
+        // last_publish_inst = time(NULL);
+        // last_publish_profile = time(NULL);
+        // last_publish_hc = time(NULL);
+        // last_publish_modbus = time(NULL);
+        last_publish_inst = monotonic_sec();
+        last_publish_profile = monotonic_sec();
+        last_publish_hc = monotonic_sec();
+        last_publish_modbus = monotonic_sec();
+
+        LOG_INFO("[SCHEDULER] Publish timers reset for PRIMARY");
+
         mqtt_subscribe_topic(&primary);
 
         // rithika 02April2026
@@ -48,16 +102,21 @@ static void on_connect_success(void *mqtt_ctx,
             current_active_primary = 1;
 
         current_active_secondary = -1;
-        primary_mqtt_conn_time = time(NULL);
+        // primary_mqtt_conn_time = time(NULL);
+        primary_mqtt_conn_time = monotonic_sec();
         update_mqtt_status("connected");
         update_mqtt_time(0);
 
         /* If secondary was active, disconnect it */
         if (secondary.connected)
         {
-            LOG_INFO("[SWITCH] Disconnecting secondary");
-            MQTTAsync_disconnect(secondary.client, NULL);
+            LOG_INFO("[SWITCH] Scheduling secondary disconnect");
+
             secondary.connected = false;
+
+            secondary_need_destroy = 1;
+            // secondary_destroy_time = time(NULL);
+            secondary_destroy_time = monotonic_sec();
         }
     }
 
@@ -69,6 +128,19 @@ static void on_connect_success(void *mqtt_ctx,
         {
 
             current_active = &secondary;
+            /* Reset publish scheduler after broker switch */
+            /* Gokul added the below time resetting information when it connects to new broker --> 14/05/2026 */
+            // last_publish_inst = time(NULL);
+            // last_publish_profile = time(NULL);
+            // last_publish_hc = time(NULL);
+            // last_publish_modbus = time(NULL);
+            last_publish_inst = monotonic_sec();
+            last_publish_profile = monotonic_sec();
+            last_publish_hc = monotonic_sec();
+            last_publish_modbus = monotonic_sec();
+
+            LOG_INFO("[SCHEDULER] Publish timers reset for SECONDARY");
+
             mqtt_subscribe_topic(&secondary);
 
             // rithika 02April2026
@@ -78,7 +150,8 @@ static void on_connect_success(void *mqtt_ctx,
                 current_active_secondary = 1;
 
             current_active_primary = -1;
-            secn_mqtt_conn_time = time(NULL);
+            // secn_mqtt_conn_time = time(NULL);
+            secn_mqtt_conn_time = monotonic_sec();
             update_mqtt_status("connected");
             update_mqtt_time(0);
         }
@@ -87,28 +160,112 @@ static void on_connect_success(void *mqtt_ctx,
     LOG_INFO("[STATE] Active broker is now %s", current_active ? current_active->cfg.broker_ip : "NONE");
 }
 
+// static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
+// {
+//     mqtt_conn_t *conn = mqtt_ctx;
+//     conn->connected = false;
+//     LOG_INFO("[MQTT] Connection failed to %s", conn->cfg.broker_ip);
+//     if (conn == &primary)
+//     {
+//         primary_connecting = 0;
+
+//         if (conn->client)
+//         {
+//             MQTTAsync_destroy(&conn->client);
+//             conn->client = NULL;
+//         }
+//     }
+//     else if (conn == &secondary)
+//     {
+//         secondary_connecting = 0;
+
+//         if (conn->client)
+//         {
+//             MQTTAsync_destroy(&conn->client);
+//             conn->client = NULL;
+//         }
+//     }
+
+//     // rithika 04April2026
+//     if (conn->cfg.primary)
+//     {
+//         LOG_ERROR("[MQTT] PRIMARY FAILED");
+//         primary_mqtt_conn_time = 0;
+//         current_active_primary = -1;
+//     }
+//     else
+//     {
+//         LOG_ERROR("[MQTT] SECONDARY FAILED");
+//         secn_mqtt_conn_time = 0;
+//         current_active_secondary = -1;
+//     }
+//     update_mqtt_status("disconnected");
+//     primary_mqtt_conn_time = 0;
+//     secn_mqtt_conn_time = 0;
+//     update_mqtt_time(0);
+//     // update_mqtt_status("disconnected"); //Gokul commented this line --> 02/05/2026
+//     // update_mqtt_time(0);
+// }
+
 static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 {
-    mqtt_conn_t *conn = mqtt_ctx;
-    conn->connected = false;
-    LOG_INFO("[MQTT] Connection failed to %s", conn->cfg.broker_ip);
+    mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
 
-    // rithika 04April2026
-    if (conn->cfg.primary)
+    conn->connected = false;
+
+    LOG_INFO("[MQTT] Connection failed to %s",
+             conn->cfg.broker_ip);
+
+    if (conn == &primary)
     {
+        primary_connecting = 0;
+
+        // last_primary_try = time(NULL);
+        last_primary_try = monotonic_sec();
+
+        primary_need_destroy = 1;
+        // primary_destroy_time = time(NULL);
+        primary_destroy_time = monotonic_sec();
+
         LOG_ERROR("[MQTT] PRIMARY FAILED");
+
         primary_mqtt_conn_time = 0;
         current_active_primary = -1;
     }
-    else
+    else if (conn == &secondary)
     {
+        secondary_connecting = 0;
+
+        // last_secondary_try = time(NULL);
+        last_secondary_try = monotonic_sec();
+
+        secondary_need_destroy = 1;
+        // secondary_destroy_time = time(NULL);
+        secondary_destroy_time = monotonic_sec();
+
         LOG_ERROR("[MQTT] SECONDARY FAILED");
+
         secn_mqtt_conn_time = 0;
         current_active_secondary = -1;
     }
+    if (current_active == conn)
+    {
+        current_active = NULL;
+        cur_active_mqtt = -1;
+    }
 
-    update_mqtt_status("disconnected");
-    // update_mqtt_time(0);
+    // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
+    //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
+    if (primary.connected || secondary.connected)
+    {
+        update_mqtt_status("connected");
+    }
+    else
+    {
+        update_mqtt_status("disconnected");
+    }
+
+    update_mqtt_time(0);
 }
 
 void on_send_success(void *context, MQTTAsync_successData *response)
@@ -116,6 +273,48 @@ void on_send_success(void *context, MQTTAsync_successData *response)
     unsigned char *payload = (unsigned char *)context;
     free(payload);
 }
+
+// void connectionLost(void *context, char *cause)
+// {
+//     mqtt_conn_t *lost = (mqtt_conn_t *)context;
+
+//     LOG_INFO("[MQTT] Connection lost from %s", lost->cfg.broker_ip);
+
+//     lost->connected = false;
+
+//     if (current_active == lost)
+//     {
+//         current_active = NULL;
+//         // rithika 02April2026
+//         cur_active_mqtt = -1;
+//     }
+//     // Gokul added this to clear the status --> 05/05/2026
+//     update_mqtt_status("disconnected");
+//     primary_mqtt_conn_time = 0;
+//     secn_mqtt_conn_time = 0;
+//     update_mqtt_time(0);
+//     /* Destroy old MQTT client */
+//     if (lost->client)
+//     {
+//         MQTTAsync_destroy(&lost->client);
+//         lost->client = NULL;
+//     }
+//     if (lost == &primary)
+//         primary_connecting = 0;
+//     else if (lost == &secondary)
+//         secondary_connecting = 0;
+//     /* If primary lost -> immediately try secondary */
+//     /* Gokul commented the below lines --> 02/05/2026 */
+
+//     // if (lost == &primary)
+//     // {
+//     //     if (!secondary.connected && secondary.cfg.enable_mqtt)
+//     //     {
+//     //         LOG_INFO("[FAILOVER] Connecting secondary broker");
+//     //         mqtt_connect(&secondary);
+//     //     }
+//     // }
+// }
 
 void connectionLost(void *context, char *cause)
 {
@@ -128,27 +327,64 @@ void connectionLost(void *context, char *cause)
     if (current_active == lost)
     {
         current_active = NULL;
-        // rithika 02April2026
         cur_active_mqtt = -1;
     }
 
-    /* Destroy old MQTT client */
-    if (lost->client)
+    // update_mqtt_status("disconnected");
+    // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
+    //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
+    if (primary.connected || secondary.connected)
     {
-        MQTTAsync_destroy(&lost->client);
-        lost->client = NULL;
+        update_mqtt_status("connected");
     }
+    else
+    {
+        update_mqtt_status("disconnected");
+    }
+    primary_mqtt_conn_time = 0;
+    secn_mqtt_conn_time = 0;
 
-    /* If primary lost -> immediately try secondary */
+    update_mqtt_time(0);
+
+    // ONLY FLAG — NO DESTROY HERE
+    // if (lost == &primary)
+    // {
+    //     primary_connecting = 0;
+    //     primary_need_destroy = 1;
+    //     primary_destroy_time = time(NULL);
+    // }
+    // else if (lost == &secondary)
+    // {
+    //     secondary_connecting = 0;
+    //     secondary_need_destroy = 1;
+    //     secondary_destroy_time = time(NULL);
+    // }
+
     if (lost == &primary)
     {
-        if (!secondary.connected && secondary.cfg.enable_mqtt)
-        {
-            LOG_INFO("[FAILOVER] Connecting secondary broker");
-            mqtt_connect(&secondary);
-        }
+        primary_connecting = 0;
+
+        primary_need_destroy = 1;
+        // primary_destroy_time = time(NULL);
+        primary_destroy_time = monotonic_sec();
+
+        // primary_lost_time = time(NULL);
+        primary_lost_time = monotonic_sec();
+    }
+
+    if (lost == &secondary)
+    {
+        secondary_connecting = 0;
+
+        secondary_need_destroy = 1;
+        // secondary_destroy_time = time(NULL);
+        secondary_destroy_time = monotonic_sec();
+
+        // secondary_lost_time = time(NULL);
+        secondary_lost_time = monotonic_sec();
     }
 }
+
 /**
  * configure_tls()
  * ---------------
@@ -291,22 +527,22 @@ void configure_tls(mqtt_conn_t *conn)
     printf("Certificate Path Check Primary Variable = %d\n", certificate_path_check_primary);
     printf("Certificate Path Check Secondary Variable = %d\n", certificate_path_check_secondary);
     printf("Variables changed!!!\n");
-    if (cfg->primary == 1)
-    {
-        if (certificate_path_check_primary == 0)
-            base_path = MQTT_1_CERTS_LOC;
-        else
-            base_path = MQTT_2_CERTS_LOC;
-    }
-    else
-    {
-        if (certificate_path_check_secondary == 0)
-            base_path = MQTT_1_CERTS_LOC;
-        else
-            base_path = MQTT_2_CERTS_LOC;
-    }
+    // if (cfg->primary == 1)
+    // {
+    //     if (certificate_path_check_primary == 0)
+    //         base_path = MQTT_1_CERTS_LOC;
+    //     else
+    //         base_path = MQTT_2_CERTS_LOC;
+    // }
+    // else
+    // {
+    //     if (certificate_path_check_secondary == 0)
+    //         base_path = MQTT_1_CERTS_LOC;
+    //     else
+    //         base_path = MQTT_2_CERTS_LOC;
+    // }
 
-    LOG_INFO("[TLS] Using cert path: %s", base_path);
+    // LOG_INFO("[TLS] Using cert path: %s", base_path);
 
     // ---- Server certificate verification ----
     ssl->enableServerCertAuth = (cfg->insecure == 0) ? 1 : 0;
@@ -362,11 +598,11 @@ int mqtt_connect(mqtt_conn_t *conn)
              conn->cfg.broker_port);
     LOG_INFO("URL CONNECTION ---> %s", url);
     /* Create client only once */
-    if (conn->client)
-    {
-        MQTTAsync_destroy(&conn->client);
-        conn->client = NULL;
-    }
+    // if (conn->client && conn->connected == false)
+    // {
+    //     MQTTAsync_destroy(&conn->client);
+    //     conn->client = NULL;
+    // }
     if (conn->client == NULL)
     {
         MQTTAsync_create(&conn->client,
@@ -390,6 +626,9 @@ int mqtt_connect(mqtt_conn_t *conn)
     opts.keepAliveInterval = 10;
     opts.cleansession = 1;
 
+    opts.connectTimeout = 5;
+    opts.retryInterval = 0;
+
     // opts.automaticReconnect = 1;
     // opts.minRetryInterval = 3;
     // opts.maxRetryInterval = 10;
@@ -406,7 +645,14 @@ int mqtt_connect(mqtt_conn_t *conn)
 
     conn->connected = false;
 
-    return MQTTAsync_connect(conn->client, &opts);
+    // return MQTTAsync_connect(conn->client, &opts);
+    pthread_mutex_lock(&mqtt_api_mutex);
+
+    int rc = MQTTAsync_connect(conn->client, &opts);
+
+    pthread_mutex_unlock(&mqtt_api_mutex);
+
+    return rc;
 }
 
 void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
@@ -1128,430 +1374,580 @@ int on_message_arrived(void *context,
     return 1;
 }
 
+// int update_mqtt_status(char *status)
+// {
+//     printf("MQTT_Status before updating to redis = %s\n", status);
+//     printf("current active primary  %d current activesecondary %d \n", current_active_primary, current_active_secondary);
+//     // if (strcmp(status, "connected") == 0)
+//     // {
+//     //     if (current_active_primary == 0)
+//     //     {
+//     //         redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", "disconnected");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     //     else if (current_active_primary == 1)
+//     //     {
+//     //         redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+
+//     //         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", "disconnected");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     //     else if (current_active_secondary == 0)
+//     //     {
+//     //         redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+
+//     //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", "disconnected");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     //     else if (current_active_secondary == 1)
+//     //     {
+//     //         redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+
+//     //         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", "disconnected");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     // }
+//     // else
+//     // {
+//     //     if (!primary.connected && !secondary.connected)
+//     //     {
+//     //         redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
+
+//     //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     //     else if (!primary.connected)
+//     //     {
+//     //         if (certificate_path_check_primary == 0)
+//     //         {
+//     //             redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
+//     //             if (rly)
+//     //                 freeReplyObject(rly);
+//     //         }
+//     //         else
+//     //         {
+//     //             redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
+//     //             if (rly)
+//     //                 freeReplyObject(rly);
+//     //         }
+//     //     }
+//     //     else if (!secondary.connected)
+//     //     {
+//     //         if (certificate_path_check_secondary == 0)
+//     //         {
+//     //             redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
+//     //             if (rly)
+//     //                 freeReplyObject(rly);
+//     //         }
+//     //         else
+//     //         {
+//     //             redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
+//     //             if (rly)
+//     //                 freeReplyObject(rly);
+//     //         }
+//     //     }
+//     // }
+// }
+
 int update_mqtt_status(char *status)
 {
-    printf("MQTT_Status before updating to redis = %s\n", status);
-    printf("current active primary  %d current activesecondary %d \n", current_active_primary, current_active_secondary);
-    if (strcmp(status, "connected") == 0)
-    {
-        if (current_active_primary == 0)
-        {
-            redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
-            if (rly)
-                freeReplyObject(rly);
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", "disconnected");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else if (current_active_primary == 1)
-        {
-            redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
-            if (rly)
-                freeReplyObject(rly);
+    strncpy(mqtt_status_value, status, sizeof(mqtt_status_value) - 1);
+    mqtt_status_value[sizeof(mqtt_status_value) - 1] = '\0';
 
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", "disconnected");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else if (current_active_secondary == 0)
-        {
-            redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
-            if (rly)
-                freeReplyObject(rly);
+    mqtt_status_update_req = 1;
 
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", "disconnected");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else if (current_active_secondary == 1)
-        {
-            redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
-            if (rly)
-                freeReplyObject(rly);
-
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", "disconnected");
-            if (rly)
-                freeReplyObject(rly);
-        }
-    }
-    else
-    {
-        if (!primary.connected && !secondary.connected)
-        {
-            redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
-
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else if (!primary.connected)
-        {
-            if (certificate_path_check_primary == 0)
-            {
-                redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
-                if (rly)
-                    freeReplyObject(rly);
-            }
-            else
-            {
-                redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
-                if (rly)
-                    freeReplyObject(rly);
-            }
-        }
-        else if (!secondary.connected)
-        {
-            if (certificate_path_check_secondary == 0)
-            {
-                redisReply *rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "connection_status", status);
-                if (rly)
-                    freeReplyObject(rly);
-            }
-            else
-            {
-                redisReply *rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "connection_status", status);
-                if (rly)
-                    freeReplyObject(rly);
-            }
-        }
-    }
+    return 0;
 }
+
+// int update_mqtt_time(int update_last_msg_time)
+// {
+
+//     time_t now = time(NULL);
+//     redisReply *rly;
+
+//     char pub_time[32];
+//     strftime(pub_time, sizeof(pub_time), "%Y:%m:%d %H:%M:%S", localtime(&now));
+
+//     if (current_active_primary == 0)
+//     {
+//         char uptime_str[64] = {0};
+//         int uptime = now - primary_mqtt_conn_time;
+//         int days = uptime / (24 * 3600);
+//         uptime = uptime % (24 * 3600);
+
+//         int hours = uptime / 3600;
+//         uptime = uptime % 3600;
+
+//         int minutes = uptime / 60;
+//         int seconds = uptime % 60;
+
+//         snprintf(uptime_str, sizeof(uptime_str),
+//                  "%dd %0dh %0dm %0ds",
+//                  days, hours, minutes, seconds);
+
+//         if (update_last_msg_time == 1)
+//         {
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             secn_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//         else
+//         {
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", uptime_str);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             secn_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//     }
+//     else if (current_active_primary == 1)
+//     {
+
+//         char uptime_str[64] = {0};
+//         int uptime = now - primary_mqtt_conn_time;
+//         int days = uptime / (24 * 3600);
+//         uptime = uptime % (24 * 3600);
+
+//         int hours = uptime / 3600;
+//         uptime = uptime % 3600;
+
+//         int minutes = uptime / 60;
+//         int seconds = uptime % 60;
+
+//         snprintf(uptime_str, sizeof(uptime_str),
+//                  "%dd %0dh %0dm %0ds",
+//                  days, hours, minutes, seconds);
+
+//         if (update_last_msg_time == 1)
+//         {
+
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             secn_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//         else
+//         {
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s ", "uptime", uptime_str);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             secn_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//     }
+
+//     else if (current_active_secondary == 0)
+//     {
+//         int uptime = now - secn_mqtt_conn_time;
+
+//         int days = uptime / (24 * 3600);
+//         uptime = uptime % (24 * 3600);
+
+//         int hours = uptime / 3600;
+//         uptime = uptime % 3600;
+
+//         int minutes = uptime / 60;
+//         int seconds = uptime % 60;
+
+//         char uptime_str[64];
+//         snprintf(uptime_str, sizeof(uptime_str),
+//                  "%dd %0dh %0dm %0ds",
+//                  days, hours, minutes, seconds);
+
+//         if (update_last_msg_time == 1)
+//         {
+
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             primary_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//         else
+//         {
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", uptime_str);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             primary_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//     }
+
+//     else if (current_active_secondary == 1)
+//     {
+//         int uptime = now - secn_mqtt_conn_time;
+
+//         int days = uptime / (24 * 3600);
+//         uptime = uptime % (24 * 3600);
+
+//         int hours = uptime / 3600;
+//         uptime = uptime % 3600;
+
+//         int minutes = uptime / 60;
+//         int seconds = uptime % 60;
+
+//         char uptime_str[64];
+//         snprintf(uptime_str, sizeof(uptime_str),
+//                  "%dd %0dh %0dm %0ds",
+//                  days, hours, minutes, seconds);
+
+//         if (update_last_msg_time == 1)
+//         {
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             primary_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//         else
+//         {
+//             rly = redisCommand(ctx, "HSET mqtt_1_status %s %s ", "uptime", uptime_str);
+
+//             if (rly)
+//                 freeReplyObject(rly);
+//             primary_mqtt_conn_time = 0;
+//             rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//     }
+
+//     if (!primary.connected && !secondary.connected)
+//     {
+//         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//         if (rly)
+//             freeReplyObject(rly);
+
+//         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//         if (rly)
+//             freeReplyObject(rly);
+//     }
+
+//     ///////////////////
+//     // if (certificate_path_check_primary == 0)
+//     // {
+//     //     char uptime_str[64] = {0};
+//     //     int uptime = now - primary_mqtt_conn_time;
+//     //     int days = uptime / (24 * 3600);
+//     //     uptime = uptime % (24 * 3600);
+
+//     //     int hours = uptime / 3600;
+//     //     uptime = uptime % 3600;
+
+//     //     int minutes = uptime / 60;
+//     //     int seconds = uptime % 60;
+
+//     //     snprintf(uptime_str, sizeof(uptime_str),
+//     //              "%dd %0dh %0dm %0ds",
+//     //              days, hours, minutes, seconds);
+
+//     //     rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//     //     if (rly)
+//     //         freeReplyObject(rly);
+//     //     secn_mqtt_conn_time = 0;
+//     //     // rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//     //     // if (rly)
+//     //     //     freeReplyObject(rly);
+//     // }
+//     // else if (certificate_path_check_primary == 1)
+//     // {
+//     //     char uptime_str[64] = {0};
+//     //     int uptime = now - primary_mqtt_conn_time;
+//     //     int days = uptime / (24 * 3600);
+//     //     uptime = uptime % (24 * 3600);
+
+//     //     int hours = uptime / 3600;
+//     //     uptime = uptime % 3600;
+
+//     //     int minutes = uptime / 60;
+//     //     int seconds = uptime % 60;
+
+//     //     snprintf(uptime_str, sizeof(uptime_str),
+//     //              "%dd %0dh %0dm %0ds",
+//     //              days, hours, minutes, seconds);
+
+//     //     rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//     //     if (rly)
+//     //         freeReplyObject(rly);
+//     //     secn_mqtt_conn_time = 0;
+//     //     // rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//     //     // if (rly)
+//     //     //     freeReplyObject(rly);
+//     // }
+
+//     // if (certificate_path_check_secondary == 0)
+//     // {
+//     //     int uptime = now - secn_mqtt_conn_time;
+
+//     //     int days = uptime / (24 * 3600);
+//     //     uptime = uptime % (24 * 3600);
+
+//     //     int hours = uptime / 3600;
+//     //     uptime = uptime % 3600;
+
+//     //     int minutes = uptime / 60;
+//     //     int seconds = uptime % 60;
+
+//     //     char uptime_str[64];
+//     //     snprintf(uptime_str, sizeof(uptime_str),
+//     //              "%dd %0dh %0dm %0ds",
+//     //              days, hours, minutes, seconds);
+
+//     //     rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//     //     if (rly)
+//     //         freeReplyObject(rly);
+//     //     primary_mqtt_conn_time = 0;
+//     //     // rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//     //     // if (rly)
+//     //     //     freeReplyObject(rly);
+//     // }
+//     // else if (certificate_path_check_secondary == 1)
+//     // {
+//     //     int uptime = now - secn_mqtt_conn_time;
+
+//     //     int days = uptime / (24 * 3600);
+//     //     uptime = uptime % (24 * 3600);
+
+//     //     int hours = uptime / 3600;
+//     //     uptime = uptime % 3600;
+
+//     //     int minutes = uptime / 60;
+//     //     int seconds = uptime % 60;
+
+//     //     char uptime_str[64];
+//     //     snprintf(uptime_str, sizeof(uptime_str),
+//     //              "%dd %0dh %0dm %0ds",
+//     //              days, hours, minutes, seconds);
+
+//     //     rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
+
+//     //     if (rly)
+//     //         freeReplyObject(rly);
+//     //     primary_mqtt_conn_time = 0;
+//     //     // rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//     //     // if (rly)
+//     //     //     freeReplyObject(rly);
+//     // }
+
+//     // if (!primary.connected && !secondary.connected)
+//     // {
+//     //     rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//     //     if (rly)
+//     //         freeReplyObject(rly);
+
+//     //     rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//     //     if (rly)
+//     //         freeReplyObject(rly);
+//     // }
+//     // else if (!primary.connected)
+//     // {
+//     //     if(certificate_path_check_primary == 0)
+//     //     {
+//     //         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     //     else
+//     //     {
+//     //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     // }
+//     // else if (!secondary.connected)
+//     // {
+//     //     if (certificate_path_check_secondary == 0)
+//     //     {
+//     //         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     //     else
+//     //     {
+//     //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
+//     //         if (rly)
+//     //             freeReplyObject(rly);
+//     //     }
+//     // }
+// }
+
+void format_uptime(int seconds, char *out, size_t size)
+{
+    int d = seconds / 86400;
+    int h = (seconds % 86400) / 3600;
+    int m = (seconds % 3600) / 60;
+    int s = seconds % 60;
+
+    snprintf(out, size, "%dd %dh %dm %ds", d, h, m, s);
+}
+
+// int update_mqtt_time(int update_last_msg_time)
+// {
+//     // if (!current_active)
+//     //     return -1;
+
+//     time_t now = time(NULL);
+//     redisReply *rly;
+
+//     char pub_time[32];
+//     strftime(pub_time, sizeof(pub_time), "%Y:%m:%d %H:%M:%S", localtime(&now));
+
+//     char uptime_str[64];
+//     int uptime = 0;
+
+//     if (current_active == &primary)
+//     {
+//         uptime = now - primary_mqtt_conn_time;
+
+//         // snprintf(uptime_str, sizeof(uptime_str), "%d", uptime);
+//         format_uptime(uptime, uptime_str, sizeof(uptime_str));
+
+//         if (update_last_msg_time)
+//         {
+//             rly = redisCommand(ctx,
+//                                "HSET mqtt_0_status uptime %s last_message_time %s",
+//                                uptime_str, pub_time);
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//         else
+//         {
+//             rly = redisCommand(ctx,
+//                                "HSET mqtt_0_status uptime %s",
+//                                uptime_str);
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+
+//         // reset other
+//         rly = redisCommand(ctx, "HSET mqtt_1_status uptime 0");
+//         if (rly)
+//             freeReplyObject(rly);
+//     }
+//     else if (current_active == &secondary)
+//     {
+//         uptime = now - secn_mqtt_conn_time;
+
+//         // snprintf(uptime_str, sizeof(uptime_str), "%d", uptime);
+//         format_uptime(uptime, uptime_str, sizeof(uptime_str));
+
+//         if (update_last_msg_time)
+//         {
+//             rly = redisCommand(ctx,
+//                                "HSET mqtt_1_status uptime %s last_message_time %s",
+//                                uptime_str, pub_time);
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+//         else
+//         {
+//             rly = redisCommand(ctx,
+//                                "HSET mqtt_1_status uptime %s",
+//                                uptime_str);
+//             if (rly)
+//                 freeReplyObject(rly);
+//         }
+
+//         // reset other
+//         rly = redisCommand(ctx, "HSET mqtt_0_status uptime 0");
+//         if (rly)
+//             freeReplyObject(rly);
+//     }
+//     else if (current_active == NULL)
+//     {
+//         redisReply *rly;
+
+//         rly = redisCommand(ctx, "HSET mqtt_0_status uptime 0s");
+//         if (rly)
+//             freeReplyObject(rly);
+
+//         rly = redisCommand(ctx, "HSET mqtt_1_status uptime 0s");
+//         if (rly)
+//             freeReplyObject(rly);
+
+//         return 0;
+//     }
+//     return 0;
+// }
 
 int update_mqtt_time(int update_last_msg_time)
 {
-
-    time_t now = time(NULL);
-    redisReply *rly;
+    // time_t now = time(NULL);
+    time_t now = monotonic_sec();
 
     char pub_time[32];
-    strftime(pub_time, sizeof(pub_time), "%Y:%m:%d %H:%M:%S", localtime(&now));
+    strftime(pub_time, sizeof(pub_time), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-    if (current_active_primary == 0)
+    int uptime = 0;
+
+    if (current_active == &primary)
     {
-        char uptime_str[64] = {0};
-        int uptime = now - primary_mqtt_conn_time;
-        int days = uptime / (24 * 3600);
-        uptime = uptime % (24 * 3600);
+        uptime = now - primary_mqtt_conn_time;
 
-        int hours = uptime / 3600;
-        uptime = uptime % 3600;
+        format_uptime(uptime, mqtt_time_uptime, sizeof(mqtt_time_uptime));
 
-        int minutes = uptime / 60;
-        int seconds = uptime % 60;
-
-        snprintf(uptime_str, sizeof(uptime_str),
-                 "%dd %0dh %0dm %0ds",
-                 days, hours, minutes, seconds);
-
-        if (update_last_msg_time == 1)
-        {
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-            if (rly)
-                freeReplyObject(rly);
-            secn_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else
-        {
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", uptime_str);
-
-            if (rly)
-                freeReplyObject(rly);
-            secn_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
+        mqtt_time_active = 0;
     }
-    else if (current_active_primary == 1)
+    else if (current_active == &secondary)
     {
+        uptime = now - secn_mqtt_conn_time;
 
-        char uptime_str[64] = {0};
-        int uptime = now - primary_mqtt_conn_time;
-        int days = uptime / (24 * 3600);
-        uptime = uptime % (24 * 3600);
+        format_uptime(uptime, mqtt_time_uptime, sizeof(mqtt_time_uptime));
 
-        int hours = uptime / 3600;
-        uptime = uptime % 3600;
-
-        int minutes = uptime / 60;
-        int seconds = uptime % 60;
-
-        snprintf(uptime_str, sizeof(uptime_str),
-                 "%dd %0dh %0dm %0ds",
-                 days, hours, minutes, seconds);
-
-        if (update_last_msg_time == 1)
-        {
-
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-            if (rly)
-                freeReplyObject(rly);
-            secn_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else
-        {
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s ", "uptime", uptime_str);
-
-            if (rly)
-                freeReplyObject(rly);
-            secn_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
+        mqtt_time_active = 1;
+    }
+    else
+    {
+        strcpy(mqtt_time_uptime, "0s");
+        mqtt_time_active = -1;
     }
 
-    else if (current_active_secondary == 0)
-    {
-        int uptime = now - secn_mqtt_conn_time;
+    if (update_last_msg_time)
+        strncpy(mqtt_time_lastmsg, pub_time, sizeof(mqtt_time_lastmsg));
 
-        int days = uptime / (24 * 3600);
-        uptime = uptime % (24 * 3600);
+    mqtt_time_update_last = update_last_msg_time;
 
-        int hours = uptime / 3600;
-        uptime = uptime % 3600;
-
-        int minutes = uptime / 60;
-        int seconds = uptime % 60;
-
-        char uptime_str[64];
-        snprintf(uptime_str, sizeof(uptime_str),
-                 "%dd %0dh %0dm %0ds",
-                 days, hours, minutes, seconds);
-
-        if (update_last_msg_time == 1)
-        {
-
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-            if (rly)
-                freeReplyObject(rly);
-            primary_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else
-        {
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", uptime_str);
-
-            if (rly)
-                freeReplyObject(rly);
-            primary_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
-    }
-
-    else if (current_active_secondary == 1)
-    {
-        int uptime = now - secn_mqtt_conn_time;
-
-        int days = uptime / (24 * 3600);
-        uptime = uptime % (24 * 3600);
-
-        int hours = uptime / 3600;
-        uptime = uptime % 3600;
-
-        int minutes = uptime / 60;
-        int seconds = uptime % 60;
-
-        char uptime_str[64];
-        snprintf(uptime_str, sizeof(uptime_str),
-                 "%dd %0dh %0dm %0ds",
-                 days, hours, minutes, seconds);
-
-        if (update_last_msg_time == 1)
-        {
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-            if (rly)
-                freeReplyObject(rly);
-            primary_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
-        else
-        {
-            rly = redisCommand(ctx, "HSET mqtt_1_status %s %s ", "uptime", uptime_str);
-
-            if (rly)
-                freeReplyObject(rly);
-            primary_mqtt_conn_time = 0;
-            rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-            if (rly)
-                freeReplyObject(rly);
-        }
-    }
-
-    if (!primary.connected && !secondary.connected)
-    {
-        rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-        if (rly)
-            freeReplyObject(rly);
-
-        rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-        if (rly)
-            freeReplyObject(rly);
-    }
-
-    ///////////////////
-    // if (certificate_path_check_primary == 0)
-    // {
-    //     char uptime_str[64] = {0};
-    //     int uptime = now - primary_mqtt_conn_time;
-    //     int days = uptime / (24 * 3600);
-    //     uptime = uptime % (24 * 3600);
-
-    //     int hours = uptime / 3600;
-    //     uptime = uptime % 3600;
-
-    //     int minutes = uptime / 60;
-    //     int seconds = uptime % 60;
-
-    //     snprintf(uptime_str, sizeof(uptime_str),
-    //              "%dd %0dh %0dm %0ds",
-    //              days, hours, minutes, seconds);
-
-    //     rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-    //     if (rly)
-    //         freeReplyObject(rly);
-    //     secn_mqtt_conn_time = 0;
-    //     // rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-    //     // if (rly)
-    //     //     freeReplyObject(rly);
-    // }
-    // else if (certificate_path_check_primary == 1)
-    // {
-    //     char uptime_str[64] = {0};
-    //     int uptime = now - primary_mqtt_conn_time;
-    //     int days = uptime / (24 * 3600);
-    //     uptime = uptime % (24 * 3600);
-
-    //     int hours = uptime / 3600;
-    //     uptime = uptime % 3600;
-
-    //     int minutes = uptime / 60;
-    //     int seconds = uptime % 60;
-
-    //     snprintf(uptime_str, sizeof(uptime_str),
-    //              "%dd %0dh %0dm %0ds",
-    //              days, hours, minutes, seconds);
-
-    //     rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-    //     if (rly)
-    //         freeReplyObject(rly);
-    //     secn_mqtt_conn_time = 0;
-    //     // rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-    //     // if (rly)
-    //     //     freeReplyObject(rly);
-    // }
-
-    // if (certificate_path_check_secondary == 0)
-    // {
-    //     int uptime = now - secn_mqtt_conn_time;
-
-    //     int days = uptime / (24 * 3600);
-    //     uptime = uptime % (24 * 3600);
-
-    //     int hours = uptime / 3600;
-    //     uptime = uptime % 3600;
-
-    //     int minutes = uptime / 60;
-    //     int seconds = uptime % 60;
-
-    //     char uptime_str[64];
-    //     snprintf(uptime_str, sizeof(uptime_str),
-    //              "%dd %0dh %0dm %0ds",
-    //              days, hours, minutes, seconds);
-
-    //     rly = redisCommand(ctx, "HSET mqtt_0_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-    //     if (rly)
-    //         freeReplyObject(rly);
-    //     primary_mqtt_conn_time = 0;
-    //     // rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-    //     // if (rly)
-    //     //     freeReplyObject(rly);
-    // }
-    // else if (certificate_path_check_secondary == 1)
-    // {
-    //     int uptime = now - secn_mqtt_conn_time;
-
-    //     int days = uptime / (24 * 3600);
-    //     uptime = uptime % (24 * 3600);
-
-    //     int hours = uptime / 3600;
-    //     uptime = uptime % 3600;
-
-    //     int minutes = uptime / 60;
-    //     int seconds = uptime % 60;
-
-    //     char uptime_str[64];
-    //     snprintf(uptime_str, sizeof(uptime_str),
-    //              "%dd %0dh %0dm %0ds",
-    //              days, hours, minutes, seconds);
-
-    //     rly = redisCommand(ctx, "HSET mqtt_1_status %s %s %s %s", "uptime", uptime_str, "last_message_time", pub_time);
-
-    //     if (rly)
-    //         freeReplyObject(rly);
-    //     primary_mqtt_conn_time = 0;
-    //     // rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-    //     // if (rly)
-    //     //     freeReplyObject(rly);
-    // }
-
-    // if (!primary.connected && !secondary.connected)
-    // {
-    //     rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-    //     if (rly)
-    //         freeReplyObject(rly);
-
-    //     rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-    //     if (rly)
-    //         freeReplyObject(rly);
-    // }
-    // else if (!primary.connected)
-    // {
-    //     if(certificate_path_check_primary == 0)
-    //     {
-    //         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-    //         if (rly)
-    //             freeReplyObject(rly);
-    //     }
-    //     else
-    //     {
-    //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-    //         if (rly)
-    //             freeReplyObject(rly);
-    //     }
-    // }
-    // else if (!secondary.connected)
-    // {
-    //     if (certificate_path_check_secondary == 0)
-    //     {
-    //         rly = redisCommand(ctx, "HSET mqtt_0_status %s %s", "uptime", "0s");
-    //         if (rly)
-    //             freeReplyObject(rly);
-    //     }
-    //     else
-    //     {
-    //         rly = redisCommand(ctx, "HSET mqtt_1_status %s %s", "uptime", "0s");
-    //         if (rly)
-    //             freeReplyObject(rly);
-    //     }
-    // }
+    mqtt_time_update_req = 1;
+    return 0;
 }
