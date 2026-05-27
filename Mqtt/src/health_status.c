@@ -144,7 +144,7 @@ static int fetch_dcu_info(redisContext *ctx, dcu_info_t *info)
 
     memset(info, 0, sizeof(*info));
 
-    redis_hget(ctx, HASH_DCU_INFO, "device_name", info->dcu_name, sizeof(info->dcu_name));
+    redis_hget(ctx, HASH_DCU_INFO, "device", info->dcu_name, sizeof(info->dcu_name));
     redis_hget(ctx, HASH_DCU_INFO, "serial_num", info->serial_num, sizeof(info->serial_num));
     redis_hget(ctx, HASH_DCU_INFO, "fw_ver", info->firmware, sizeof(info->firmware));
     redis_hget(ctx, HASH_GENERAL_CDF, "attribute1", info->attr1, sizeof(info->attr1));
@@ -849,58 +849,69 @@ int build_health_status_xml(redisContext *ctx, char *out_buf, size_t out_sz, int
         }
     }
 
-    meter_count = 0;
-    fetch_meters_from_cfg(ctx, HASH_SER0_CFG, "serial0", meters, &meter_count);
-    enrich_meter_status_ser(ctx, meters, meter_count, "serial0");
-    // enrich_meter_status(ctx, meters, meter_count, "serial0");
+    char dev_type[8] = {0};
+    redis_hget(ctx, HASH_SER0_CFG, "device_type", dev_type, sizeof(dev_type));
 
+    if (strcmp(dev_type, "1") == 0)
     {
-        uint32_t i;
-        for (i = 0; i < meter_count; i++)
+        meter_count = 0;
+        fetch_meters_from_cfg(ctx, HASH_SER0_CFG, "serial0", meters, &meter_count);
+        enrich_meter_status_ser(ctx, meters, meter_count, "serial0");
+        // enrich_meter_status(ctx, meters, meter_count, "serial0");
+
         {
-            const meter_entry_t *m = &meters[i];
-            APPEND("        <METER"
-                   " ID=\"%u\""
-                   " BAY=\"%s\""
-                   " IP_ADDRESS=\"%s\""
-                   " COMMUNICATION_STATUS=\"%s\""
-                   " COMM_INHIBIT=\"%s\""
-                   " TIME_SYNCHED=\"%s\""
-                   " VPN_IP=\"%s\""
-                   " REMOTE_ACCESS_ENABLED=\"%s\"/>\n",
-                   m->slave_id, m->bay, m->ip_address,
-                   m->comm_status, m->comm_inhibit,
-                   m->time_synched, m->vpn_ip,
-                   m->remote_access_enabled);
+            uint32_t i;
+            for (i = 0; i < meter_count; i++)
+            {
+                const meter_entry_t *m = &meters[i];
+                APPEND("        <METER"
+                       " ID=\"%u\""
+                       " BAY=\"%s\""
+                       " IP_ADDRESS=\"%s\""
+                       " COMMUNICATION_STATUS=\"%s\""
+                       " COMM_INHIBIT=\"%s\""
+                       " TIME_SYNCHED=\"%s\""
+                       " VPN_IP=\"%s\""
+                       " REMOTE_ACCESS_ENABLED=\"%s\"/>\n",
+                       m->slave_id, m->bay, m->ip_address,
+                       m->comm_status, m->comm_inhibit,
+                       m->time_synched, m->vpn_ip,
+                       m->remote_access_enabled);
+            }
         }
     }
 
-    meter_count = 0;
-    fetch_meters_from_cfg(ctx, HASH_SER1_CFG, "serial1", meters, &meter_count);
-    enrich_meter_status_ser(ctx, meters, meter_count, "serial1");
+    memset(dev_type, 0 ,sizeof(dev_type));
+    redis_hget(ctx, HASH_SER1_CFG, "device_type", dev_type, sizeof(dev_type));
 
-    // enrich_meter_status(ctx, meters, meter_count, "serial1");
+    if (strcmp(dev_type, "1") == 0)
     {
-        uint32_t i;
-        for (i = 0; i < meter_count; i++)
+        meter_count = 0;
+        fetch_meters_from_cfg(ctx, HASH_SER1_CFG, "serial1", meters, &meter_count);
+        enrich_meter_status_ser(ctx, meters, meter_count, "serial1");
+
+        // enrich_meter_status(ctx, meters, meter_count, "serial1");
         {
-            const meter_entry_t *m = &meters[i];
-            APPEND("        <METER"
-                   " ID=\"%u\""
-                   " BAY=\"%s\""
-                   " IP_ADDRESS=\"%s\""
-                   " COMMUNICATION_STATUS=\"%s\""
-                   " COMM_INHIBIT=\"%s\""
-                   " TIME_SYNCHED=\"%s\""
-                   " VPN_IP=\"%s\""
-                   " REMOTE_ACCESS_ENABLED=\"%s\"/>\n",
-                   m->slave_id, m->bay, m->ip_address,
-                   m->comm_status, m->comm_inhibit,
-                   m->time_synched, m->vpn_ip,
-                   m->remote_access_enabled);
+            uint32_t i;
+            for (i = 0; i < meter_count; i++)
+            {
+                const meter_entry_t *m = &meters[i];
+                APPEND("        <METER"
+                       " ID=\"%u\""
+                       " BAY=\"%s\""
+                       " IP_ADDRESS=\"%s\""
+                       " COMMUNICATION_STATUS=\"%s\""
+                       " COMM_INHIBIT=\"%s\""
+                       " TIME_SYNCHED=\"%s\""
+                       " VPN_IP=\"%s\""
+                       " REMOTE_ACCESS_ENABLED=\"%s\"/>\n",
+                       m->slave_id, m->bay, m->ip_address,
+                       m->comm_status, m->comm_inhibit,
+                       m->time_synched, m->vpn_ip,
+                       m->remote_access_enabled);
+            }
         }
     }
-
     APPEND("    </METERS>\n");
     APPEND("</HEALTH_STATUS>\n");
 

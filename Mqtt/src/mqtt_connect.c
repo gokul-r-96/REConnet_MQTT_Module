@@ -6,7 +6,6 @@
 #define MQTT_1_CERTS_LOC "/usr/cms/config/mqtt_1_certs"
 #define MQTT_2_CERTS_LOC "/usr/cms/config/mqtt_2_certs"
 
-
 extern int certificate_path_check_primary;
 extern int certificate_path_check_secondary;
 extern char meter_serials[MAX_METERS][32];
@@ -59,10 +58,6 @@ extern time_t last_publish_hc;
 extern time_t last_publish_modbus;
 
 pthread_mutex_t mqtt_api_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-
-
-
 
 static void on_connect_success(void *mqtt_ctx,
                                MQTTAsync_successData *resp)
@@ -1915,9 +1910,10 @@ int update_mqtt_time(int update_last_msg_time)
 {
     // time_t now = time(NULL);
     time_t now = monotonic_sec();
-
+    time_t pub_now = time(NULL);
+    
     char pub_time[32];
-    strftime(pub_time, sizeof(pub_time), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    strftime(pub_time, sizeof(pub_time), "%Y-%m-%d %H:%M:%S", localtime(&pub_now));
 
     int uptime = 0;
 

@@ -76,6 +76,8 @@
 #define UTILITY_CODE            "1"
 #define UTILITY_DATA_TYPE       "CYCLIC"
 
+#define HASH_GENERAL_CDF "general_cfg"
+
 /** OBIS codes for D1 (Nameplate) section */
 #define OBIS_METER_SERIAL "00_00_60_01_00_ff"
 #define OBIS_MANUFACTURER "00_00_60_01_01_ff"

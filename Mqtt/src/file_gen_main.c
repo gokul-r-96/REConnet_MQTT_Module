@@ -397,30 +397,114 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
 {
     (void)serial; /* Future: look up meter-specific DCU details */
 
-    char *dcu_name = redis_hget(ctx, DCU_HASH, "device_name");
-    char *attr1 = redis_hget(ctx, DCU_HASH, "attribute_1");
-    char *attr2 = redis_hget(ctx, DCU_HASH, "attribute_2");
-    char *attr3 = redis_hget(ctx, DCU_HASH, "attribute_3");
-    char *attr4 = redis_hget(ctx, DCU_HASH, "attribute_4");
-    char *attr5 = redis_hget(ctx, DCU_HASH, "attribute_5");
+    char field_key[128];
+    snprintf(field_key, sizeof(field_key),
+             "meter_*_*_%s_details", serial);
+
+    LOG_INFO("Fetching IPaddress and meter name from meter_status[%s]", field_key);
+
+    redisReply *r = redisCommand(ctx,
+                                 "HSCAN meter_status 0 MATCH %s", field_key);
+
+    if (!r || r->type != REDIS_REPLY_ARRAY || r->elements != 2)
+    {
+        LOG_ERROR("meter_status entry missing for %s", field_key);
+        if (r)
+            freeReplyObject(r);
+        return;
+    }
+
+    redisReply *data = r->element[1];
+
+    if (data->type != REDIS_REPLY_ARRAY || data->elements == 0)
+    {
+        LOG_ERROR("No matching meter_status entry for %s", field_key);
+        freeReplyObject(r);
+        return;
+    }
+
+    char *json_str = NULL;
+
+    for (size_t i = 0; i < data->elements; i += 2)
+    {
+        char *key = data->element[i]->str;
+        char *value = data->element[i + 1]->str;
+
+        if (strstr(key, serial))
+        {
+            json_str = value;
+            break;
+        }
+    }
+
+    if (!json_str)
+    {
+        LOG_ERROR("No valid JSON found for %s", field_key);
+        freeReplyObject(r);
+        return;
+    }
+
+    char *json_copy = strdup(json_str);
+    freeReplyObject(r);
+
+    cJSON *j = cJSON_Parse(json_copy);
+    free(json_copy);
+    if (!j)
+    {
+        LOG_ERROR("Failed to parse D1 JSON");
+
+        return;
+    }
+    const char *ipv4_address = cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
+    const char *location = cJSON_GetObjectItem(j, "location")->valuestring;
+    const char *port = cJSON_GetObjectItem(j, "port")->valuestring;
+
+    char *dcu_name = redis_hget(ctx, DCU_HASH, "device");
+    char *attr1 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute1");
+    char *attr2 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute2");
+    char *attr3 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute3");
+    char *attr4 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute4");
+    char *attr5 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute5");
     char *dcu_ser = redis_hget(ctx, DCU_HASH, "serial_num");
 
-    fprintf(fp,
-            "\t\t<GENERAL>\n"
-            "\t\t\t<DCU_DETAILS"
-            " Name=\"%s\""
-            " ATTRIBUTE_1=\"%s\""
-            " ATTRIBUTE_2=\"%s\""
-            " ATTRIBUTE_3=\"%s\""
-            " ATTRIBUTE_4=\"%s\""
-            " ATTRIBUTE_5=\"%s\""
-            " SERIALNUM=\"%s\""
-            " TIME=\"%s\"/>\n"
-            "\t\t\t<METER_DETAILS BAY=\"%s\" IP_ADDRESS=\"%s\"/>\n"
-            "\t\t</GENERAL>\n",
-            dcu_name, attr1, attr2, attr3,
-            attr4, attr5, dcu_ser, dt_str,
-            METER_BAY, METER_IP);
+    if (strcmp(port, "2") == 0)
+    {
+        fprintf(fp,
+                "\t\t<GENERAL>\n"
+                "\t\t\t<DCU_DETAILS"
+                " Name=\"%s\""
+                " ATTRIBUTE_1=\"%s\""
+                " ATTRIBUTE_2=\"%s\""
+                " ATTRIBUTE_3=\"%s\""
+                " ATTRIBUTE_4=\"%s\""
+                " ATTRIBUTE_5=\"%s\""
+                " SERIALNUM=\"%s\""
+                " TIME=\"%s\"/>\n"
+                "\t\t\t<METER_DETAILS BAY=\"%s\" IP_ADDRESS=\"%s\"/>\n"
+                "\t\t</GENERAL>\n",
+                dcu_name, attr1, attr2, attr3,
+                attr4, attr5, dcu_ser, dt_str,
+                location, ipv4_address);
+    }
+    else
+    {
+        fprintf(fp,
+                "\t\t<GENERAL>\n"
+                "\t\t\t<DCU_DETAILS"
+                " Name=\"%s\""
+                " ATTRIBUTE_1=\"%s\""
+                " ATTRIBUTE_2=\"%s\""
+                " ATTRIBUTE_3=\"%s\""
+                " ATTRIBUTE_4=\"%s\""
+                " ATTRIBUTE_5=\"%s\""
+                " SERIALNUM=\"%s\""
+                " TIME=\"%s\"/>\n"
+                "\t\t\t<METER_DETAILS BAY=\"%s\" IP_ADDRESS=\"\"/>\n"
+                "\t\t</GENERAL>\n",
+                dcu_name, attr1, attr2, attr3,
+                attr4, attr5, dcu_ser, dt_str,
+                location);
+    }
 }
 
 /**
@@ -1140,7 +1224,7 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     int rc4 = generate_event_log_cdf(ctx, serial, date, event_type, event_file_name);
     if (rc4 != 0)
     {
-        // return result; //rithika commented 28/04/2026 
+        // return result; //rithika commented 28/04/2026
     }
 
     char output_file_name[64];
@@ -1151,8 +1235,9 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
                           ls_file_name,
                           mn_file_name,
                           event_file_name,
-                          billing_file_name) != 0);
-        // return result; //rithika commented 28/04/2026
+                          billing_file_name) != 0)
+        ;
+    // return result; //rithika commented 28/04/2026
 
     // rithika 18Apr2026
     char file_rem_cmd[128];
