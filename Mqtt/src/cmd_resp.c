@@ -26,7 +26,7 @@ int invalid_metsn_resp_msg(cmd_request_t cmd, char *out_buf)
     int offset = 0;
 
     char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
-    char *dcu_name = redis_hget(ctx, "dcu_info", "device_name");
+    char *dcu_name = redis_hget(ctx, "dcu_info", "device");
 
     offset += sprintf(out_buf + offset, "<COMMAND_RESPONSE DCU=\"%s\" SERIALNUM=\"%s\">\n", dcu_name, dcu_sn);
     offset += sprintf(out_buf + offset, "<COMMAND_RESULT CMD_STATUS=\"3\" CMD_MSG=\"Invalid meter name\"/>\n");
@@ -49,7 +49,7 @@ int unknown_req_resp_msg(cmd_request_t cmd, char *out_buf)
     int offset = 0;
 
     char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
-    char *dcu_name = redis_hget(ctx, "dcu_info", "device_name");
+    char *dcu_name = redis_hget(ctx, "dcu_info", "device");
 
     offset += sprintf(out_buf + offset, "<COMMAND_RESPONSE DCU=\"%s\" SERIALNUM=\"%s\">\n", dcu_name, dcu_sn);
     offset += sprintf(out_buf + offset, "<COMMAND_RESULT CMD_STATUS=\"7\" CMD_MSG=\"Unknown request\"/>\n");
@@ -72,7 +72,7 @@ int reset_resp_msg(cmd_request_t cmd, char *out_buf)
     int offset = 0;
 
     char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
-    char *dcu_name = redis_hget(ctx, "dcu_info", "device_name");
+    char *dcu_name = redis_hget(ctx, "dcu_info", "device");
 
     offset += sprintf(out_buf + offset, "<COMMAND_RESPONSE DCU=\"%s\" SERIALNUM=\"%s\">\n", dcu_name, dcu_sn);
     offset += sprintf(out_buf + offset, "<COMMAND_RESULT CMD_STATUS=\"0\" CMD_MSG=\"SUCCESS\"/>\n");

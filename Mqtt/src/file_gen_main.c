@@ -455,7 +455,7 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
 
         return;
     }
-    const char *ipv4_address = cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
+
     const char *location = cJSON_GetObjectItem(j, "location")->valuestring;
     const char *port = cJSON_GetObjectItem(j, "port")->valuestring;
 
@@ -469,6 +469,13 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
 
     if (strcmp(port, "2") == 0)
     {
+        const char *met_id = cJSON_GetObjectItem(j, "met_id")->valuestring;
+        int int_met_id = atoi(met_id);
+        char ip_addr_key[64] = {0};
+    
+        snprintf(ip_addr_key, sizeof(ip_addr_key), "ip_addr[%d]", int_met_id);
+        char *ipv4_address = redis_hget(ctx, "ethernet_meter_cfg", ip_addr_key);
+
         fprintf(fp,
                 "\t\t<GENERAL>\n"
                 "\t\t\t<DCU_DETAILS"
@@ -608,46 +615,94 @@ void cdf_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
     const char *meter_category = cJSON_GetObjectItem(j, "meter_category")->valuestring;
     const char *curr_rating = cJSON_GetObjectItem(j, "current_rating")->valuestring;
     const char *year_of_manuf = cJSON_GetObjectItem(j, "year_of_manufacture")->valuestring;
-    const char *ipv4_address = cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
+    // rithika 28May2026
+    // const char *ipv4_address = cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
     const char *hdlc_device_address = cJSON_GetObjectItem(j, "hdlc_device_address")->valuestring;
     const char *tranfmr_volt = cJSON_GetObjectItem(j, "transfrmr_volt")->valuestring;
     const char *extra_obis_1 = cJSON_GetObjectItem(j, "extra_obis_1")->valuestring;
     const char *extra_obis_2 = cJSON_GetObjectItem(j, "extra_obis_2")->valuestring;
     const char *extra_obis_3 = cJSON_GetObjectItem(j, "extra_obis_3")->valuestring;
 
+    // rithika 28May2026
+    const char *port = cJSON_GetObjectItem(j, "port")->valuestring;
+
     fprintf(out, "\t\t<!--Nameplate Profile-->\n\t\t<D1>\n");
 
-    fprintf(out,
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
-            "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n",
-            "G1", OBIS_METER_SERIAL, "Meter_Serial_Number", serial_number,
-            "G22", OBIS_MANUFACTURER, "Manufacturer_Name", manufacturer,
-            "G17", OBIS_FW_VERSION, "Firmware_Version", firmware_version,
-            "G15", OBIS_METER_TYPE, "Meter_Type", meter_type,
-            "G8", OBIS_CT_RATIO, "Internal_CT_Ratio", pt_ratio,
-            "G7", OBIS_VT_RATIO, "Internal_VT_Ratio", ct_ratio,
-            "", OBIS_METER_CATEGORY, "meter_category", meter_category,
-            "", OBIS_CURR_RATING, "current_rating", curr_rating,
-            "", OBIS_YR_OF_MANUF, "year_of_manufacture", year_of_manuf,
-            "", EXTRA_OBIS_1, "", ipv4_address,
-            "", IPV4_ADDRESS, "", hdlc_device_address,
-            "", EXTRA_OBIS_2, "", tranfmr_volt,
-            "", HDLC_SETUP, "", extra_obis_1,
-            "", TRANSFRMR_RATIO_VOLTAGE, "", extra_obis_2,
-            "", EXTRA_OBIS_3, "", extra_obis_3);
+    if (strcmp(port, "2") == 0)
+    {
+        const char *met_id = cJSON_GetObjectItem(j, "met_id")->valuestring;
+        int int_met_id = atoi(met_id);
+        char ip_addr_key[64] = {0};
+        snprintf(ip_addr_key, sizeof(ip_addr_key), "ip_addr[%d]", int_met_id);
+        char *ipv4_address = redis_hget(ctx, "ethernet_meter_cfg", ip_addr_key);
+        printf("ipv4_address %s ip_addr_key %s\n", ipv4_address, ip_addr_key);
+
+        fprintf(out,
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n",
+                "G1", OBIS_METER_SERIAL, "Meter_Serial_Number", serial_number,
+                "G22", OBIS_MANUFACTURER, "Manufacturer_Name", manufacturer,
+                "G17", OBIS_FW_VERSION, "Firmware_Version", firmware_version,
+                "G15", OBIS_METER_TYPE, "Meter_Type", meter_type,
+                "G8", OBIS_CT_RATIO, "Internal_CT_Ratio", pt_ratio,
+                "G7", OBIS_VT_RATIO, "Internal_VT_Ratio", ct_ratio,
+                "", OBIS_METER_CATEGORY, "meter_category", meter_category,
+                "", OBIS_CURR_RATING, "current_rating", curr_rating,
+                "", OBIS_YR_OF_MANUF, "year_of_manufacture", year_of_manuf,
+                "", EXTRA_OBIS_1, "", extra_obis_1,
+                "", IPV4_ADDRESS, "", ipv4_address,
+                "", EXTRA_OBIS_2, "", extra_obis_2,
+                "", HDLC_SETUP, "", hdlc_device_address,
+                "", TRANSFRMR_RATIO_VOLTAGE, "", tranfmr_volt,
+                "", EXTRA_OBIS_3, "", extra_obis_3);
+    }
+    else
+    {
+        fprintf(out,
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n"
+                "\t\t\t<NAMEPARAM CODE=\"%s\" OBIS_CODE=\"%s\" NAME=\"%s\" VALUE=\"%s\"/>\n",
+                "G1", OBIS_METER_SERIAL, "Meter_Serial_Number", serial_number,
+                "G22", OBIS_MANUFACTURER, "Manufacturer_Name", manufacturer,
+                "G17", OBIS_FW_VERSION, "Firmware_Version", firmware_version,
+                "G15", OBIS_METER_TYPE, "Meter_Type", meter_type,
+                "G8", OBIS_CT_RATIO, "Internal_CT_Ratio", pt_ratio,
+                "G7", OBIS_VT_RATIO, "Internal_VT_Ratio", ct_ratio,
+                "", OBIS_METER_CATEGORY, "meter_category", meter_category,
+                "", OBIS_CURR_RATING, "current_rating", curr_rating,
+                "", OBIS_YR_OF_MANUF, "year_of_manufacture", year_of_manuf,
+                "", EXTRA_OBIS_1, "", extra_obis_1,
+                "", IPV4_ADDRESS, "", "",
+                "", EXTRA_OBIS_2, "", extra_obis_2,
+                "", HDLC_SETUP, "", hdlc_device_address,
+                "", TRANSFRMR_RATIO_VOLTAGE, "", tranfmr_volt,
+                "", EXTRA_OBIS_3, "", extra_obis_3);
+    }
     fprintf(out, "\t\t</D1>\n");
     cJSON_Delete(j);
 
