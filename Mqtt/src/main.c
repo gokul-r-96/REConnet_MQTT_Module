@@ -61,6 +61,10 @@ extern pthread_mutex_t mqtt_api_mutex;
 extern time_t primary_lost_time;
 extern time_t secondary_lost_time;
 
+extern char mqtt_cmd_buffer[4096];
+extern volatile int mqtt_cmd_recv;
+extern pthread_mutex_t cmd_mutex ;
+
 /**
  * mqtt_module_start()
  * -------------------
@@ -679,6 +683,22 @@ void *mqtt_worker_thread(void *arg)
                 if (rly)
                     freeReplyObject(rly);
             }
+        }
+        //Subscribing topic command response function should be called from worker thread --> 29/05/2026 Gokul
+        if(mqtt_cmd_recv)
+        {
+            char local_cmd[4096];
+
+            pthread_mutex_lock(&cmd_mutex);
+
+            strcpy(local_cmd,mqtt_cmd_buffer);
+
+            mqtt_cmd_recv = 0;
+
+            pthread_mutex_unlock(&cmd_mutex);
+
+
+            processServerMsg(current_active, local_cmd);
         }
         send_hc_msg();
         update_mqtt_time(0);

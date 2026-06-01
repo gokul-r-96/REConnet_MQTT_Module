@@ -59,6 +59,11 @@ extern time_t last_publish_modbus;
 
 pthread_mutex_t mqtt_api_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+char mqtt_cmd_buffer[4096];
+volatile int mqtt_cmd_recv = 0;
+
+pthread_mutex_t cmd_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static void on_connect_success(void *mqtt_ctx,
                                MQTTAsync_successData *resp)
 {
@@ -616,13 +621,13 @@ int mqtt_connect(mqtt_conn_t *conn)
     MQTTAsync_connectOptions opts =
         MQTTAsync_connectOptions_initializer;
 
-    opts.username = conn->cfg.username;
-    opts.password = conn->cfg.password;
-    opts.keepAliveInterval = 10;
-    opts.cleansession = 1;
+    opts.username           =   conn->cfg.username;
+    opts.password           =   conn->cfg.password;
+    opts.keepAliveInterval  =   conn->cfg.keep_alive;
+    opts.cleansession       =   conn->cfg.clean_session;
 
-    opts.connectTimeout = 5;
-    opts.retryInterval = 0;
+    opts.connectTimeout     =   5;
+    opts.retryInterval      =   0;
 
     // opts.automaticReconnect = 1;
     // opts.minRetryInterval = 3;
@@ -791,7 +796,7 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
     }
     else
     {
-        LOG_INFO("[HEALTH CHECK Message] Transfer completed");
+        LOG_INFO("[COMMAND RESPONSE Message] Transfer completed");
     }
 
     update_mqtt_time(1);
@@ -1044,9 +1049,9 @@ int generate_redis_list(cmd_request_t cmd)
     MeterStatus status;
 
     memset(&status, 0, sizeof(status));
-    if (read_meter_status(ctx, cmd.args[1], &status) != 0)
+    if (read_meter_status(ctx, cmd.args[0], &status) != 0)
     {
-        LOG_ERROR("Cannot read meter status for meter %s", cmd.args[1]);
+        LOG_ERROR("Cannot read meter status for meter %s", cmd.args[0]);
         return -1;
     }
 
@@ -1059,7 +1064,7 @@ int generate_redis_list(cmd_request_t cmd)
         if (i == 0)
         {
             cJSON_AddStringToObject(root, "msgType", "OD_LS_DATA");
-            cJSON_AddStringToObject(data, "startdate", cmd.args[2]); // 30-03-2026 format
+            cJSON_AddStringToObject(data, "startdate", cmd.args[1]); // 30-03-2026 format
         }
         else if (i == 1)
         {
@@ -1067,7 +1072,7 @@ int generate_redis_list(cmd_request_t cmd)
             int day, month, year;
             char mn_date[32] = {0};
 
-            if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+            if (sscanf(cmd.args[1], "%d-%d-%d", &day, &month, &year) == 3)
             {
                 snprintf(mn_date, sizeof(mn_date), "%d_%d", month, year);
             }
@@ -1091,7 +1096,7 @@ int generate_redis_list(cmd_request_t cmd)
 
         cJSON_AddStringToObject(data, "port_id", status.port);
         cJSON_AddStringToObject(data, "num_days", "1");
-        cJSON_AddStringToObject(data, "meter", cmd.args[1]);
+        cJSON_AddStringToObject(data, "meter", cmd.args[0]);
 
         cJSON_AddItemToObject(root, "data", data);
 
@@ -1253,41 +1258,133 @@ int read_redis_resp(mqtt_conn_t *conn)
     return 0;
 }
 
+// int processServerMsg(mqtt_conn_t *conn, const char *msg)
+// {
+//     int i;
+//     int meter_avalb = 0;
+//     cmd_request_t cmd;
+
+//     char output_msg[PAYLOAD_BUFFER_SIZE] = {0};
+//     int msg_size = 0;
+
+//     send_hc_msg();
+
+//     if (parse_cmd_request(msg, &cmd) != 0)
+//     {
+//         fprintf(stderr, "Failed to parse command request\n");
+//         return 1;
+//     }
+
+//     LOG_INFO("TYPE        : %s", cmd.type);
+//     LOG_INFO("TRANSACTION : %s", cmd.transaction);
+//     LOG_INFO("ARG COUNT   : %u", cmd.arg_count);
+
+//     for (i = 0; i < cmd.arg_count; i++)
+//         LOG_INFO("ARG_%02u      : %s", i + 1, cmd.args[i]);
+
+//     if (cmd.arg_count > 1)
+//     {
+//         for (i = 0; i < meter_count; i++)
+//         {
+//             if (strcmp(meter_serials[i], cmd.args[1]) == 0)
+//             {
+//                 meter_avalb = 1;
+//                 break;
+//             }
+//         }
+
+//         if (meter_avalb == 0)
+//         {
+//             LOG_INFO("Meter details are invalid");
+//             msg_size = invalid_metsn_resp_msg(cmd, output_msg);
+//             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+//             return -1;
+//         }
+//     }
+
+//     if (strcmp(cmd.type, "GetDay") && strcmp(cmd.type, "FetchDay") && strcmp(cmd.type, "Reset"))
+//     {
+//         LOG_INFO("Unknown cmd_type");
+//         msg_size = unknown_req_resp_msg(cmd, output_msg);
+//         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+//         return -1;
+//     }
+
+//     printf("\033[0;32m ouput msg : %s\n size %d \033[0m\n", output_msg, msg_size);
+
+//     if (strcmp(cmd.type, "GetDay") == 0 && cmd.args[1][0] != '\0')
+//     {
+//         time_t now = time(NULL);
+//         struct tm *t = localtime(&now);
+//         char today_date[32];
+//         strftime(today_date, sizeof(today_date), "%Y-%m-%d", t);
+
+//         cdf_result_t res = generate_profile_cdf(ctx, cmd.args[1], today_date, "all");
+//         if (res.status == 0)
+//         {
+//             LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
+//             mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
+
+//             // rithika 18Apr2026
+//             char file_rem_cmd[128];
+//             sprintf(file_rem_cmd, "rm %s", res.filename);
+//             system(file_rem_cmd);
+
+//             LOG_INFO("%s is deleted successfully", res.filename);
+
+//             msg_size = success_resp_msg(cmd, output_msg);
+//             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+//         }
+//     }
+
+//     else if (strcmp(cmd.type, "FetchDay") == 0 && cmd.args[1][0] != '\0')
+//     {
+//         check_redis_resp = 1;
+//         generate_redis_list(cmd);
+//     }
+// }
+
+
 int processServerMsg(mqtt_conn_t *conn, const char *msg)
 {
     int i;
     int meter_avalb = 0;
     cmd_request_t cmd;
-
+ 
     char output_msg[PAYLOAD_BUFFER_SIZE] = {0};
     int msg_size = 0;
-
+ 
     send_hc_msg();
-
+ 
     if (parse_cmd_request(msg, &cmd) != 0)
     {
         fprintf(stderr, "Failed to parse command request\n");
         return 1;
     }
-
+ 
     LOG_INFO("TYPE        : %s", cmd.type);
     LOG_INFO("TRANSACTION : %s", cmd.transaction);
     LOG_INFO("ARG COUNT   : %u", cmd.arg_count);
-
+ 
     for (i = 0; i < cmd.arg_count; i++)
         LOG_INFO("ARG_%02u      : %s", i + 1, cmd.args[i]);
-
+ 
     if (cmd.arg_count > 1)
     {
+ 
+        printf("------------------------------Received Meter Serial : %s\n", cmd.args[0]);
+        printf("------------------------------Meter Count : %d\n", meter_count);
+        printf("------------------------------Available Meter Serials:\n");
         for (i = 0; i < meter_count; i++)
         {
-            if (strcmp(meter_serials[i], cmd.args[1]) == 0)
+            printf("----------------------meter_serials[%d] = %s\n", i, meter_serials[i]);
+            if (strcmp(meter_serials[i], cmd.args[0]) == 0)
             {
                 meter_avalb = 1;
                 break;
             }
         }
-
+ 
         if (meter_avalb == 0)
         {
             LOG_INFO("Meter details are invalid");
@@ -1296,7 +1393,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             return -1;
         }
     }
-
+ 
     if (strcmp(cmd.type, "GetDay") && strcmp(cmd.type, "FetchDay") && strcmp(cmd.type, "Reset"))
     {
         LOG_INFO("Unknown cmd_type");
@@ -1304,70 +1401,95 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         return -1;
     }
-
+ 
     printf("\033[0;32m ouput msg : %s\n size %d \033[0m\n", output_msg, msg_size);
-
-    if (strcmp(cmd.type, "GetDay") == 0 && cmd.args[1][0] != '\0')
+ 
+    if (strcmp(cmd.type, "GetDay") == 0 && cmd.args[0][0] != '\0')
     {
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
         char today_date[32];
         strftime(today_date, sizeof(today_date), "%Y-%m-%d", t);
-
-        cdf_result_t res = generate_profile_cdf(ctx, cmd.args[1], today_date, "all");
+ 
+        cdf_result_t res = generate_profile_cdf(ctx, cmd.args[0], today_date, "all");
         if (res.status == 0)
         {
             LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
             mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
-
+ 
             // rithika 18Apr2026
             char file_rem_cmd[128];
             sprintf(file_rem_cmd, "rm %s", res.filename);
             system(file_rem_cmd);
-
+ 
             LOG_INFO("%s is deleted successfully", res.filename);
-
+ 
             msg_size = success_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
     }
-
-    else if (strcmp(cmd.type, "FetchDay") == 0 && cmd.args[1][0] != '\0')
+ 
+    else if (strcmp(cmd.type, "FetchDay") == 0 && cmd.args[0][0] != '\0')
     {
         check_redis_resp = 1;
         generate_redis_list(cmd);
     }
 }
 
-int on_message_arrived(void *context,
-                       char *topicName,
-                       int topicLen,
-                       MQTTAsync_message *message)
+// int on_message_arrived(void *context,
+//                        char *topicName,
+//                        int topicLen,
+//                        MQTTAsync_message *message)
+// {
+//     mqtt_conn_t *conn = (mqtt_conn_t *)context;
+//     LOG_INFO("MQTT Messaeg is received");
+//     LOG_INFO("[MQTT RX] Topic: %s", topicName);
+//     LOG_INFO("[MQTT RX] Size: %d", message->payloadlen);
+
+//     /* Example: copy payload */
+//     char buf[2048];
+//     int len = message->payloadlen;
+
+//     if (len >= sizeof(buf))
+//         len = sizeof(buf) - 1;
+
+//     memcpy(buf, message->payload, len);
+//     buf[len] = '\0';
+
+//     LOG_INFO("[MQTT RX] Payload: %s", buf);
+
+//     processServerMsg(conn, buf);
+
+//     MQTTAsync_freeMessage(&message);
+//     MQTTAsync_free(topicName);
+
+//     return 1;
+// }
+
+
+
+
+int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_message *message)
 {
-    mqtt_conn_t *conn = (mqtt_conn_t *)context;
-    LOG_INFO("MQTT Messaeg is received");
-    LOG_INFO("[MQTT RX] Topic: %s", topicName);
-    LOG_INFO("[MQTT RX] Size: %d", message->payloadlen);
+    pthread_mutex_lock(&cmd_mutex);
 
-    /* Example: copy payload */
-    char buf[2048];
-    int len = message->payloadlen;
+    memset(mqtt_cmd_buffer,0,sizeof(mqtt_cmd_buffer));
 
-    if (len >= sizeof(buf))
-        len = sizeof(buf) - 1;
+    memcpy(mqtt_cmd_buffer,
+           message->payload,
+           message->payloadlen);
 
-    memcpy(buf, message->payload, len);
-    buf[len] = '\0';
+    mqtt_cmd_recv = 1;
 
-    LOG_INFO("[MQTT RX] Payload: %s", buf);
+    pthread_mutex_unlock(&cmd_mutex);
 
-    processServerMsg(conn, buf);
 
     MQTTAsync_freeMessage(&message);
     MQTTAsync_free(topicName);
 
     return 1;
 }
+
 
 // int update_mqtt_status(char *status)
 // {
