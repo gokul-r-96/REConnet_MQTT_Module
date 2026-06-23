@@ -55,7 +55,7 @@
 #define OBIS_TIMESTAMP          "0_0_1_0_0_255"
 
 /** CDF output directory (trailing slash required) */
-#define CDF_OUTPUT_DIR          "/usr/cms/data/"
+// #define CDF_OUTPUT_DIR          "/usr/cms/data/"
 
 /** Log file configuration */
 #define LOG_DIR                 "/usr/cms/log/"
