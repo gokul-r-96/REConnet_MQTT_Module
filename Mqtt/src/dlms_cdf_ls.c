@@ -537,9 +537,20 @@ int generate_load_profile_cdf(redisContext *ctx, const char *serial, const char 
         return -1;
     }
 
+    // rithika 23Jun2026
+    char base_path_dir[256];
+    char sqlite_db_path[256];
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    {
+        snprintf(sqlite_db_path,
+                 sizeof(sqlite_db_path),
+                 "%s/data/dcu_dlms.db",
+                 base_path_dir);
+    }
+
     /* 2. Read LS data from SQLite */
     LSDayProfile day_profile;
-    if (read_ls_data(SQLITE_DB_PATH, &status, serial, date, ctx, &day_profile) != 0)
+    if (read_ls_data(sqlite_db_path, &status, serial, date, ctx, &day_profile) != 0)
     {
         LOG_ERROR("Cannot read LS data for meter %s date %s", serial, date);
         // return -1;

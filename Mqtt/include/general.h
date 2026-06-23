@@ -49,7 +49,7 @@
 #define REDIS_HASH_BILL_OBIS_MAP "bill_cdf_obis_param_map" /**< Billing OBIS mapping hash */
 #define REDIS_HASH_EVENT_OBIS_MAP "event_cdf_obis_param_map" /**< Event OBIS mapping hash */
 #define REDIS_HASH_METER_STATUS "meter_status"             /**< Meter status hash */
-#define SQLITE_DB_PATH          "/usr/cms/data/dcu_dlms.db"  /**< SQLite DB path */
+// #define SQLITE_DB_PATH          "/usr/cms/data/dcu_dlms.db"  /**< SQLite DB path */
 
 /** OBIS code that carries the meter timestamp */
 #define OBIS_TIMESTAMP          "0_0_1_0_0_255"

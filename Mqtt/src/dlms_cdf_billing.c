@@ -400,9 +400,20 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
         return -1;
     }
 
+    // rithika 23Jun2026
+    char base_path_dir[256];
+    char sqlite_db_path[256];
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    {
+        snprintf(sqlite_db_path,
+                 sizeof(sqlite_db_path),
+                 "%s/data/dcu_dlms.db",
+                 base_path_dir);
+    }
+
     /* 2. Read Billing data from SQLite */
     BillingData bill_data;
-    if (read_billing_data(SQLITE_DB_PATH, &status, serial, year_month, ctx, &bill_data) != 0)
+    if (read_billing_data(sqlite_db_path, &status, serial, year_month, ctx, &bill_data) != 0)
     {
         LOG_ERROR("Cannot read billing data for meter %s year-month %s", serial, year_month);
         // return -1;
@@ -413,7 +424,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     if (strstr(curr_year, "curr mon "))
     {
 
-        if (read_billing_data(SQLITE_DB_PATH, &status, serial, curr_year, ctx, &bill_data_curr) != 0)
+        if (read_billing_data(sqlite_db_path, &status, serial, curr_year, ctx, &bill_data_curr) != 0)
         {
             LOG_ERROR("Cannot read billing data for meter %s year-month %s", serial, curr_year);
             // return -1;

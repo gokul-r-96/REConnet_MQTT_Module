@@ -305,9 +305,20 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
         return -1;
     }
 
+    // rithika 23Jun2026
+    char base_path_dir[256];
+    char sqlite_db_path[256];
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    {
+        snprintf(sqlite_db_path,
+                 sizeof(sqlite_db_path),
+                 "%s/data/dcu_dlms.db",
+                 base_path_dir);
+    }
+
     /* 2. Read Midnight data from SQLite */
     MNSnapshot snapshot;
-    if (read_mn_data(SQLITE_DB_PATH, &status, serial, date, ctx, &snapshot) != 0)
+    if (read_mn_data(sqlite_db_path, &status, serial, date, ctx, &snapshot) != 0)
     {
         LOG_ERROR("Cannot read midnight data for meter %s date %s", serial, date);
         // return -1;

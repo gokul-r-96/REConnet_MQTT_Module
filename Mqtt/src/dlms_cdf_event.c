@@ -453,9 +453,20 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
         return -1;
     }
 
+    // rithika 23Jun2026
+    char base_path_dir[256];
+    char sqlite_db_path[256];
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    {
+        snprintf(sqlite_db_path,
+                 sizeof(sqlite_db_path),
+                 "%s/data/dcu_dlms.db",
+                 base_path_dir);
+    }
+
     /* 2. Read Event data from SQLite */
     EventData event_data;
-    if (read_event_data(SQLITE_DB_PATH, &status, serial, date, event_type,
+    if (read_event_data(sqlite_db_path, &status, serial, date, event_type,
                         ctx, &event_data) != 0)
     {
         LOG_ERROR("Cannot read event data for meter %s", serial);
