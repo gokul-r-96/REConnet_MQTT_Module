@@ -10,6 +10,7 @@
 #include <signal.h>
 #include "/home/vishnu/Projects/REConnect/net_logger/dcu_netlog.h"
 #include "/home/vishnu/Projects/REConnect/hc_file/hc_heartbeat.h"
+#include "/home/vishnu/Projects/REConnect/net_logger/dcu_netlog.h"
 
 /* Third-party headers */
 #include <hiredis.h>

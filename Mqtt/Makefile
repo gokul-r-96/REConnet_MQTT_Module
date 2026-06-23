@@ -5,13 +5,15 @@ TARGET = re_mqtt_proc
 
 CC = /home/imx6ul/Toolchain/gcc-linaro-4.9-2014.11-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf-gcc
 
+BASEPATHDIR := /home/vishnu/Projects/REConnect/base_path
+
 INCLUDE = -I../Tools/redis-bin/include -I../Tools/openssl/include -I../Tools/paho/include -Iinclude -I/home/vishnu/Projects/REConnect/net_logger/ -I/home/vishnu/Projects/REConnect/hc_file/
 
-CFLAGS = -Wall -O2 -std=gnu99 -I. 
+CFLAGS = -Wall -O2 -std=gnu99 -I. -I$(BASEPATHDIR)
 
 LIB_DIR = -L../Tools/redis-bin/lib -L../Tools/openssl/lib -L../Tools/paho/lib -Llib    # ADD THIS IF EXISTS
 
-LIBS = -lpaho-mqtt3as -lhiredis -lssl -lcrypto -lpthread -lm -ldl -ljansson
+LIBS = -lpaho-mqtt3as -lhiredis -lssl -lcrypto -lpthread -lm -ldl -ljansson $(BASEPATHDIR)/build/libbasepath.a
 
 # SRC = $(wildcard *.c)
 # OBJ = $(SRC:.c=.o)

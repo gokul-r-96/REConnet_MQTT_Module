@@ -2,9 +2,9 @@
 #include "../include/general.h"
 
 extern int event_cmd_redis_resp;
-extern int ls_cmd_redis_resp ;
-extern int billing_cmd_redis_resp ; 
-extern int midnight_cmd_redis_resp ;
+extern int ls_cmd_redis_resp;
+extern int billing_cmd_redis_resp;
+extern int midnight_cmd_redis_resp;
 
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
@@ -103,7 +103,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 )
+    if (event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "event_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -475,8 +475,18 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
     // mkdir(CDF_OUTPUT_DIR, 0755);
 
     char out_path[512];
-    snprintf(out_path, sizeof(out_path),
-             "%sCDF_EVENT_%s_%s_%s.xml", CDF_OUTPUT_DIR, serial, date, event_type);
+    char base_path[256];
+
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path,
+                 sizeof(out_path),
+                 "%s/data/CDF_EVENT_%s_%s_%s.xml",
+                 base_path, serial, date, event_type);
+
+        // snprintf(out_path, sizeof(out_path),
+        //          "%sCDF_EVENT_%s_%s_%s.xml", CDF_OUTPUT_DIR, serial, date, event_type);
+    }
 
     FILE *fp = fopen(out_path, "w");
     if (!fp)

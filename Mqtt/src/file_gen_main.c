@@ -472,7 +472,7 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
         const char *met_id = cJSON_GetObjectItem(j, "met_id")->valuestring;
         int int_met_id = atoi(met_id);
         char ip_addr_key[64] = {0};
-    
+
         snprintf(ip_addr_key, sizeof(ip_addr_key), "ip_addr[%d]", int_met_id);
         char *ipv4_address = redis_hget(ctx, "ethernet_meter_cfg", ip_addr_key);
 
@@ -867,8 +867,19 @@ cdf_result_t generate_instantaneous_cdf(redisContext *ctx, const char *serial)
     // snprintf(out_path, sizeof(out_path),
     //          "%sCDF_INST_%s_%s.xml", CDF_OUTPUT_DIR, serial, date_str);
 
-    snprintf(result.filename, sizeof(result.filename),
-             "%sCDF_INST_%s_%s.xml", CDF_OUTPUT_DIR, serial, date_str);
+    // rithika 22Jun2026
+    char base_path[256];
+
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(result.filename,
+                 sizeof(result.filename),
+                 "%s/data/CDF_INST_%s_%s.xml",
+                 base_path, serial, date_str);
+
+        // snprintf(result.filename, sizeof(result.filename),
+        //          "%sCDF_INST_%s_%s.xml", CDF_OUTPUT_DIR, serial, date_str);
+    }
 
     FILE *fp = fopen(result.filename, "w");
     if (!fp)
@@ -914,8 +925,18 @@ static int generate_nameplate_cdf(redisContext *ctx, const char *serial)
 
     char out_path[512];
     // mkdir(CDF_OUTPUT_DIR, 0755);
-    snprintf(out_path, sizeof(out_path), "%sCDF_NP_%s_%s.xml", CDF_OUTPUT_DIR, serial, date_str);
+    // rithika 22Jun2026
+    char base_path[256];
 
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path,
+                 sizeof(out_path),
+                 "%s/data/CDF_NP_%s_%s.xml",
+                 base_path, serial, date_str);
+
+        // snprintf(out_path, sizeof(out_path), "%sCDF_NP_%s_%s.xml", CDF_OUTPUT_DIR, serial, date_str);
+    }
     // snprintf(out_path, sizeof(out_path), "CDF_NP_%s_%s.xml", serial, date_str);
 
     FILE *fp = fopen(out_path, "w");
@@ -1283,8 +1304,17 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     }
 
     char output_file_name[64];
-    sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+    char base_path[256];
 
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(output_file_name,
+                 sizeof(output_file_name),
+                 "%s/data/%s_%s",
+                 base_path,  date, serial);
+
+    // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+        }
     /* Concatenate */
     if (concatenate_files(output_file_name,
                           ls_file_name,

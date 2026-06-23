@@ -4,8 +4,8 @@
 
 extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
-extern int ls_cmd_redis_resp ;
-extern int midnight_cmd_redis_resp ;
+extern int ls_cmd_redis_resp;
+extern int midnight_cmd_redis_resp;
 /* ============================================================
  *  Billing data helpers
  * ============================================================ */
@@ -213,9 +213,9 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
 
     sqlite3_finalize(stmt);
 
-    if ( billing_cmd_redis_resp == 0 && od_table[0] != '\0')
+    if (billing_cmd_redis_resp == 0 && od_table[0] != '\0')
     {
-        LOG_INFO("Deleting od table %s",od_table);
+        LOG_INFO("Deleting od table %s", od_table);
         drop_table(od_table, db);
     }
 
@@ -435,9 +435,18 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     // mkdir(CDF_OUTPUT_DIR, 0755);
 
     char out_path[512];
-    snprintf(out_path, sizeof(out_path),
-             "%sCDF_BILL_%s_%s.xml", CDF_OUTPUT_DIR, serial, year_month);
+    char base_path[256];
 
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path,
+                 sizeof(out_path),
+                 "%s/data/CDF_BILL_%s_%s.xml",
+                 base_path, serial, year_month);
+
+        // snprintf(out_path, sizeof(out_path),
+        //          "%sCDF_BILL_%s_%s.xml", CDF_OUTPUT_DIR, serial, year_month);
+    }
     FILE *fp = fopen(out_path, "w");
     if (!fp)
     {

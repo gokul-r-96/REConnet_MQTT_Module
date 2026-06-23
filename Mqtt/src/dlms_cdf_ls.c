@@ -20,7 +20,7 @@
 extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
-extern int midnight_cmd_redis_resp ;
+extern int midnight_cmd_redis_resp;
 
 /* ============================================================
  *  OBIS parameter mapping
@@ -560,9 +560,18 @@ int generate_load_profile_cdf(redisContext *ctx, const char *serial, const char 
     // mkdir(CDF_OUTPUT_DIR, 0755);
 
     char out_path[512];
-    snprintf(out_path, sizeof(out_path),
-             "%sCDF_LS_%s_%s.xml", CDF_OUTPUT_DIR, serial, date);
+    char base_path[256];
 
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path,
+                 sizeof(out_path),
+                 "%s/data/CDF_LS_%s_%s.xml",
+                 base_path, serial, date);
+
+        // snprintf(out_path, sizeof(out_path),
+        //          "%sCDF_LS_%s_%s.xml", CDF_OUTPUT_DIR, serial, date);
+    }
     FILE *fp = fopen(out_path, "w");
     if (!fp)
     {

@@ -145,8 +145,19 @@ int log_init(void)
     // rithika 17Feb2026
     // mkdir(LOG_DIR, 0755);
 
-    snprintf(g_log_path, sizeof(g_log_path),
-             "%s%s%s", LOG_DIR, LOG_FILE_BASE, LOG_FILE_EXT);
+    // rithika 22Jun2026
+    char base_path[256];
+   
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(g_log_path,
+                 sizeof(g_log_path),
+                 "%s/log/%s%s",
+                 base_path, LOG_FILE_BASE, LOG_FILE_EXT);
+    }
+
+    // snprintf(g_log_path, sizeof(g_log_path),
+    //          "%s%s%s", LOG_DIR, LOG_FILE_BASE, LOG_FILE_EXT);
 
     // snprintf(g_log_path, sizeof(g_log_path),
     //          "%s%s", LOG_FILE_BASE, LOG_FILE_EXT);
@@ -302,8 +313,8 @@ void log_write(const char *level, const char *fmt, ...)
     {
         add_process_diag(diag_buf); // always called
     }
-    memset(diag_buf,0,sizeof(diag_buf));
-    snprintf(diag_buf, sizeof(diag_buf),  "%s",log_buf);
+    memset(diag_buf, 0, sizeof(diag_buf));
+    snprintf(diag_buf, sizeof(diag_buf), "%s", log_buf);
     dcu_netlog_send(netlog_level_of(level), "%s", diag_buf);
 
     /* -------- Logging only if enabled -------- */

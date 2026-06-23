@@ -328,8 +328,18 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
     // mkdir(CDF_OUTPUT_DIR, 0755);
 
     char out_path[512];
-    snprintf(out_path, sizeof(out_path),
-             "%sCDF_MN_%s_%s.xml", CDF_OUTPUT_DIR, serial, date);
+    char base_path[256];
+
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path,
+                 sizeof(out_path),
+                 "%s/data/CDF_MN_%s_%s.xml",
+                 base_path, serial, date);
+
+        // snprintf(out_path, sizeof(out_path),
+        //          "%sCDF_MN_%s_%s.xml", CDF_OUTPUT_DIR, serial, date);
+    }
 
     FILE *fp = fopen(out_path, "w");
     if (!fp)
