@@ -227,8 +227,8 @@ static void export_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
 
     /* Current date/time */
     char datetime[32];
-    // time_t now = time(NULL);
-    time_t now = monotonic_sec();
+    time_t now = time(NULL);
+    // time_t now = monotonic_sec();
     struct tm tm_buf;
     localtime_r(&now, &tm_buf);
     strftime(datetime, sizeof(datetime), "%Y-%m-%d %H:%M:%S", &tm_buf);
