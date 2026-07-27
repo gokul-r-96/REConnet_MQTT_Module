@@ -1143,6 +1143,10 @@ int parse_cmd_request(const char *json_str, cmd_request_t *cmd)
 
     /* Parse JSON */
     root = cJSON_Parse(json_str);
+
+    cmd->root = root;
+    cmd->data = cJSON_GetObjectItemCaseSensitive(root, "DATA");
+
     if (root == NULL)
     {
         LOG_ERROR("parse_cmd_request: Invalid JSON");
@@ -1288,7 +1292,7 @@ int parse_cmd_request(const char *json_str, cmd_request_t *cmd)
         }
     }
 
-    cJSON_Delete(root);
+    // cJSON_Delete(root); //Gokul commented this --> 15/07/2026
 
     return 0;
 }
@@ -1622,7 +1626,8 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
     for (i = 0; i < cmd.arg_count; i++)
         LOG_INFO("ARG_%02u      : %s", i + 1, cmd.args[i]);
  
-    if (cmd.arg_count > 1)
+    // if (cmd.arg_count > 1)
+    if ((!strcmp(cmd.type, "GetDay") || !strcmp(cmd.type, "FetchDay")) && cmd.arg_count > 1)
     {
  
         printf("------------------------------Received Meter Serial : %s\n", cmd.args[0]);
@@ -1643,7 +1648,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             LOG_INFO("Meter details are invalid");
             msg_size = invalid_metsn_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
-            return -1;
+            return -1; //Gokul commenting this for testing purpose ..--> 15/07/2026
         }
     }
  
@@ -1653,6 +1658,12 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         LOG_INFO("Unknown cmd_type");
         msg_size = unknown_req_resp_msg(cmd, output_msg);
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        if (cmd.root)
+        {
+            cJSON_Delete(cmd.root);
+            cmd.root = NULL;
+            cmd.data = NULL;
+        }
         return -1;
     }
  
@@ -1714,6 +1725,12 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             mqtt_send_msg(conn, json, strlen(json),CMD_RESP_TOPIC);
             free(json);
         }
+        if (cmd.root)
+        {
+            cJSON_Delete(cmd.root);
+            cmd.root = NULL;
+            cmd.data = NULL;
+        }
         return 0;
     }
     else if (strcmp(cmd.type, "get_cfg") == 0)
@@ -1736,7 +1753,12 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             mqtt_send_msg(conn,json,strlen(json),CMD_RESP_TOPIC);
             free(json);
         }
-
+        if (cmd.root)
+        {
+            cJSON_Delete(cmd.root);
+            cmd.root = NULL;
+            cmd.data = NULL;
+        }
         return 0;
     }
     else if(strcmp(cmd.type, "set_cfg") == 0)
@@ -1744,18 +1766,28 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
         if(strcmp(cmd.args[0], dcu_sn) != 0)
         {
-            msg_size = unknown_req_resp_command(cmd, output_msg);
-            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC)
+            msg_size = unknown_req_resp_msg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
             return 0;
         }
 
         msg_size = success_resp_msg(cmd, output_msg);
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
-        char *json = set_cfg_export_json(ctx,&cmd);
-        if(json)
+        if (set_cfg_export_json(ctx, &cmd) == 0)
         {
-            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
-            free(json);
+            LOG_INFO("Configuration updated successfully");
+            success_resp_msg_set_cfg(cmd, output_msg);
+        }
+        else
+        {
+            LOG_ERROR("Configuration update failed");
+            failure_resp_msg_set_cfg(cmd, output_msg);
+        }
+        if (cmd.root)
+        {
+            cJSON_Delete(cmd.root);
+            cmd.root = NULL;
+            cmd.data = NULL;
         }
         return 0;
     }

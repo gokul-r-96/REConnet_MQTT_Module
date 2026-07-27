@@ -192,6 +192,16 @@ int success_resp_msg(cmd_request_t cmd, char *out_buf)
     return build_cmd_reply(cmd, 0, "SUCCESS", out_buf);
 }
 
+int success_resp_msg_set_cfg(cmd_request_t cmd, char *out_buf)
+{
+    return build_cmd_reply(cmd, 1, "CONFIG UPDATION SUCCESS", out_buf);
+}
+
+int failure_resp_msg_set_cfg(cmd_request_t cmd, char *out_buf)
+{
+    return build_cmd_reply(cmd, 5, "CONFIG UPDATION FAILED", out_buf);
+}
+
 int invalid_metsn_resp_msg(cmd_request_t cmd, char *out_buf)
 {
     return build_cmd_reply(cmd, 3, "Invalid meter name", out_buf);

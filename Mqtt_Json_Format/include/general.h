@@ -333,6 +333,10 @@ typedef struct {
     /* ---------- ReadModbus ---------- */
     int slave_id;
     int reg_count;
+
+    cJSON *root;
+    cJSON *data;
+
     modbus_reg_t regs[MAX_REGS_PER_DEV];
 } cmd_request_t;
 

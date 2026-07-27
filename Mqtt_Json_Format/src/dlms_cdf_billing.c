@@ -470,16 +470,29 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     struct tm *curr_date = localtime(&now);
     char date[32];
     char curr_year[32] = {0};
-    strftime(date, sizeof(date), "%b %Y", curr_date);
-
+   char month[32];
+    char str_year[8];
+ 
+    strftime(month, sizeof(month), "%b", curr_date);
+    strftime(str_year, sizeof(str_year), "%Y", curr_date);
+ 
+    if (strstr(month, "Jul"))
+    {
+        sprintf(date, "July %s", str_year);
+    }
+    else if (strstr(date, "Jun"))
+    {
+        sprintf(date, "June %s", str_year);
+    }
     if (strcmp(date, year_month) == 0)
     {
         int year;
         sscanf(year_month, "%*s %d", &year);
         sprintf(curr_year, "curr mon %d", year);
     }
+    LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
 
-    LOG_INFO("Generating Billing CDF for meter %s year-month %s", serial, year_month);
+    LOG_INFO("Generating Billing CDF for meter %s year-month %s date %s, year_month %s curr_year %s", serial, year_month, date, year_month, curr_year);
 
     /* 1. Read meter status from Redis */
     MeterStatus status;
@@ -579,14 +592,28 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
     char date[32];
     char curr_year[32] = {0};
 
-    strftime(date, sizeof(date), "%b %Y", curr_date);
-
+     char month[32];
+    char str_year[8];
+ 
+    strftime(month, sizeof(month), "%b", curr_date);
+    strftime(str_year, sizeof(str_year), "%Y", curr_date);
+ 
+    if (strstr(month, "Jul"))
+    {
+        sprintf(date, "July %s", str_year);
+    }
+    else if (strstr(date, "Jun"))
+    {
+        sprintf(date, "June %s", str_year);
+    }
+    
     if (strcmp(date, year_month) == 0)
     {
         int year;
         sscanf(year_month, "%*s %d", &year);
         sprintf(curr_year, "curr mon %d", year);
     }
+    LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
 
     LOG_INFO("Generating Billing JSON for meter %s year-month %s", serial, year_month);
 
