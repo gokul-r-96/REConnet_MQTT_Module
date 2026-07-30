@@ -90,19 +90,14 @@ char *export_mqtt_cfg(redisContext *ctx, cmd_request_t *cmd)
 
     jbuf_append(&jb, "{");
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"MQTT_BROKER\",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"MQTT_BROKER\",");
 
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
@@ -210,20 +205,14 @@ char *export_modem_cfg(redisContext *ctx, cmd_request_t *cmd)
     /* Header */
     jbuf_append(&jb, "{");
 
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
 
-    jbuf_append(&jb, "\"DATATYPE\":\"MODEM\",");
-
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"MODEM\",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
@@ -325,17 +314,15 @@ char *export_ipsec_cfg(redisContext *ctx,cmd_request_t *cmd)
         return NULL;
     jbuf_append(&jb, "{");
     jbuf_append(&jb,
-        "\"TYPE\":\"OD_RESP_MESSAGE\",");
+        "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb,
         "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
     jbuf_append(&jb,
-        "\"DATATYPE\":\"IPSEC\",");
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+        "\"DATA_TYPE\":\"IPSEC\",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"IPSEC_TUNNELS\":[");
     int total = 0;
@@ -378,17 +365,14 @@ char *export_iec104_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "{");
 
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"IEC104\",");
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"IEC104\",");
+    
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
@@ -478,17 +462,13 @@ char *export_iec101_cfg(redisContext *ctx,cmd_request_t *cmd)
         return NULL;
     jbuf_append(&jb, "{");
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"IEC101\",");
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-    /* DCU Details */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"IEC101\",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"IEC101\":{");
@@ -584,17 +564,13 @@ char *export_ftp_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "{");
 
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"FTP\",");
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"FTP\",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"FTP\":{");
@@ -685,19 +661,14 @@ char *export_ntp_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "{");
 
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"NTP\",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"NTP\",");
 
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
@@ -834,19 +805,14 @@ char *export_modtcp_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "{");
 
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"MODBUS_TCP\",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"MODBUS_TCP\",");
 
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
@@ -1072,6 +1038,7 @@ static int export_one_modrtu_cfg(jbuf_t *jb,redisContext *ctx,int port,int dev,i
 
 char *export_modrtu_cfg(redisContext *ctx,cmd_request_t *cmd)
 {
+    printf("Entering MODRTU...\n");
     if (!ctx || !cmd)
         return NULL;
 
@@ -1083,24 +1050,18 @@ char *export_modrtu_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "{");
 
     /* Header */
-    jbuf_append(&jb, "\"TYPE\":\"OD_RESP_MESSAGE\",");
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-    jbuf_append(&jb, "\"DATATYPE\":\"MODBUS_RTU\",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"MODBUS_RTU\",");
 
-    /* NP */
-    export_cmd_dcu_nameplate(&jb, ctx);
-    jbuf_append(&jb, ",");
-
-    /* DCU_DETAILS */
-    export_dcu_details(&jb, ctx);
-    jbuf_append(&jb, ",");
-
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"MODBUS_RTU\":[");
-
+    printf("Upto Data...\n");
     int total = 0;
 
     /* Count all RTU devices only on Modbus ports */
@@ -1151,7 +1112,8 @@ char *export_modrtu_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "]");   /* MODBUS_RTU */
     jbuf_append(&jb, "}");   /* DATA */
     jbuf_append(&jb, "}");   /* ROOT */
-
+    printf("All build completed..\n");
+    printf("%s\n",jb.data);
     return jb.data;
 }
 
@@ -1190,8 +1152,6 @@ char *get_cfg_export_json(redisContext *ctx, cmd_request_t *cmd)
     if (!strcmp(cmd->data_type_req, "NTP"))
         return export_ntp_cfg(ctx, cmd);
 
-    // if (!strcmp(cmd->data_type_req, "NETWORK"))
-    //     return export_network_cfg(ctx, cmd);
 
     return NULL;
 }

@@ -78,6 +78,7 @@
   "DATA": {
 	"DCU" : "123456789",
     "IPSEC_TUNNEL" : 1,
+	"ENABLE_TUNNEL" : 1,
 	"RIGHT_IP" : "122.166.196.34",
 	"LEFT_ID" : "welcome@123",
 	"LEFT_SUBNET"      : "192.168.11.0",
@@ -126,6 +127,7 @@
   "DATA": {
 	"DCU" : "123456789",
     "NTP_SERVER" : 2,
+	"ENABLE_NTP" : 1,
 	"NTP_IP" : "192.168.10.69",
 	"NTP_PORT" : 123,
   }
@@ -141,6 +143,7 @@
   "DATA": {
 	"DCU" : "123456789",
     "FTP_SERVER" : 2,
+	"ENABLE_SERVER" : 1,
 	"IP_ADDRESS" : "192.168.10.69",
 	"PORT" : 123,
 	"USERNAME" : "GOKUL",
@@ -158,6 +161,7 @@
   "DATA_TYPE": "IEC104",
   "DATA": {
 	"DCU" : "123456789",
+	"ENABLE_104" : 1,
     "ASDU_ADDRESS" : 2,
 	"CYCLIC_INT" : 60,
 	"DLMS_IOA_OFFSET" : 5000,
@@ -174,6 +178,7 @@
   "DATA_TYPE": "IEC101",
   "DATA": {
 	"DCU" : "123456789",
+	"ENABLE_101" : 1,
     "ASDU_ADDRESS" : 2,
 	"CYCLIC_INT" : 60,
 	"DLMS_IOA_OFFSET" : 5000,

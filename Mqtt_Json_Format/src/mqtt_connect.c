@@ -1667,7 +1667,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         return -1;
     }
  
-    printf("\033[0;32m ouput msg : %s\n size %d \033[0m\n", output_msg, msg_size);
+    // printf("\033[0;32m ouput msg : %s\n size %d \033[0m\n", output_msg, msg_size);
  
     if (strcmp(cmd.type, "GetDay") == 0 && cmd.args[0][0] != '\0')
     {
@@ -1744,10 +1744,14 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             return;
         }
         /* Send ACK */
-        msg_size = success_resp_msg(cmd, output_msg);
+        // msg_size = success_resp_msg(cmd, output_msg);
+        msg_size = ack_msg_reply(2004, output_msg);
+        printf("After ack msg building..\n");
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        printf("After sending ack message...\n");
         /* Export requested configuration */
         char *json = get_cfg_export_json(ctx, &cmd);
+        printf("After exporting cfg messages...\n");
         if (json)
         {
             mqtt_send_msg(conn,json,strlen(json),CMD_RESP_TOPIC);
@@ -1771,17 +1775,19 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             return 0;
         }
 
-        msg_size = success_resp_msg(cmd, output_msg);
+        msg_size = ack_msg_reply(2102, output_msg);
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         if (set_cfg_export_json(ctx, &cmd) == 0)
         {
             LOG_INFO("Configuration updated successfully");
-            success_resp_msg_set_cfg(cmd, output_msg);
+            msg_size = success_resp_msg_set_cfg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
         else
         {
             LOG_ERROR("Configuration update failed");
-            failure_resp_msg_set_cfg(cmd, output_msg);
+            msg_size = failure_resp_msg_set_cfg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
         if (cmd.root)
         {

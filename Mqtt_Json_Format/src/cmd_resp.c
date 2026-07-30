@@ -143,32 +143,41 @@ static int build_cmd_reply(cmd_request_t cmd,int status,const char *msg,char *ou
     cJSON_AddStringToObject(root, "COMMAND_TYPE", cmd.type);
     cJSON_AddStringToObject(root, "DATA_TYPE", cmd.data_type_req);
 
-    if (cmd.arg_count > 0)
-        cJSON_AddStringToObject(data, "DCU", cmd.args[0]);
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
 
-    if (strcmp(cmd.type, "ReadModbus") == 0)
+    if (dcu_sn != NULL)
     {
-        cJSON_AddNumberToObject(data, "SLAVE_ID", cmd.slave_id);
+        cJSON_AddStringToObject(data, "DCU", dcu_sn);
+        free(dcu_sn);    // Only if redis_hget() returns allocated memory
     }
     else
     {
-        if (cmd.arg_count > 1)
-            cJSON_AddStringToObject(data, "METER", cmd.args[1]);
-
-        if (strcmp(cmd.type, "GetDay") == 0)
-        {
-            if (cmd.arg_count > 2)
-                cJSON_AddStringToObject(data, "DATE", cmd.args[2]);
-        }
-        else if (strcmp(cmd.type, "FetchDay") == 0)
-        {
-            if (cmd.arg_count > 2)
-                cJSON_AddStringToObject(data, "START_DATE", cmd.args[2]);
-
-            if (cmd.arg_count > 3)
-                cJSON_AddStringToObject(data, "END_DATE", cmd.args[3]);
-        }
+        cJSON_AddStringToObject(data, "DCU", "");
     }
+
+    // if (strcmp(cmd.type, "ReadModbus") == 0)
+    // {
+    //     cJSON_AddNumberToObject(data, "SLAVE_ID", cmd.slave_id);
+    // }
+    // else
+    // {
+    //     if (cmd.arg_count > 1)
+    //         cJSON_AddStringToObject(data, "METER", cmd.args[1]);
+
+    //     if (strcmp(cmd.type, "GetDay") == 0)
+    //     {
+    //         if (cmd.arg_count > 2)
+    //             cJSON_AddStringToObject(data, "DATE", cmd.args[2]);
+    //     }
+    //     else if (strcmp(cmd.type, "FetchDay") == 0)
+    //     {
+    //         if (cmd.arg_count > 2)
+    //             cJSON_AddStringToObject(data, "START_DATE", cmd.args[2]);
+
+    //         if (cmd.arg_count > 3)
+    //             cJSON_AddStringToObject(data, "END_DATE", cmd.args[3]);
+    //     }
+    // }
 
     cJSON_AddNumberToObject(data, "CMD_STATUS", status);
     cJSON_AddStringToObject(data, "CMD_MSG", msg);
@@ -194,12 +203,12 @@ int success_resp_msg(cmd_request_t cmd, char *out_buf)
 
 int success_resp_msg_set_cfg(cmd_request_t cmd, char *out_buf)
 {
-    return build_cmd_reply(cmd, 1, "CONFIG UPDATION SUCCESS", out_buf);
+    return build_cmd_reply(cmd, 0, "SUCCESS", out_buf);
 }
 
 int failure_resp_msg_set_cfg(cmd_request_t cmd, char *out_buf)
 {
-    return build_cmd_reply(cmd, 5, "CONFIG UPDATION FAILED", out_buf);
+    return build_cmd_reply(cmd, 10, "FAILED", out_buf);
 }
 
 int invalid_metsn_resp_msg(cmd_request_t cmd, char *out_buf)
@@ -211,6 +220,48 @@ int unknown_req_resp_msg(cmd_request_t cmd, char *out_buf)
 {
     return build_cmd_reply(cmd, 7, "Unknown request", out_buf);
 }
+
+int ack_msg_reply(int seq_num, char *out_buf)
+{
+
+    /* Get DCU Serial Number */
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+    if (dcu_sn == NULL)
+        dcu_sn = "UNKNOWN";
+
+    /* Get Current Timestamp */
+    char ts[32];
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    /* Create JSON */
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "TYPE", "ack");
+
+    char seq_str[16];
+    snprintf(seq_str, sizeof(seq_str), "%d", seq_num);
+    cJSON_AddStringToObject(root, "SEQ_NUM", seq_str);
+
+    cJSON_AddStringToObject(root, "ACK_BY", "DCU");
+    cJSON_AddStringToObject(root, "DCU", dcu_sn);
+    cJSON_AddStringToObject(root, "TS", ts);
+
+    char *json = cJSON_PrintUnformatted(root);
+    strcpy(out_buf, json);
+    int len = strlen(json);
+    free(json);
+    cJSON_Delete(root);
+
+    if (dcu_sn != NULL && strcmp(dcu_sn, "UNKNOWN") != 0)
+        free(dcu_sn);   // Only if redis_hget() allocates memory
+
+    // redisFree(ctx);
+
+    return len;
+}
+
 
 int reset_resp_msg(cmd_request_t cmd, char *out_buf)
 {
