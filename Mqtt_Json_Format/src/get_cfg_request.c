@@ -6,7 +6,7 @@
 #include <time.h>
 #include "json_helper.h"
 
-static int export_one_mqtt_cfg(jbuf_t *jb,redisContext *ctx,int instance,int is_last)
+static int export_one_mqtt_cfg(jbuf_t *jb, redisContext *ctx, int instance, int is_last)
 {
     char hash[32];
     char buf[256];
@@ -17,56 +17,56 @@ static int export_one_mqtt_cfg(jbuf_t *jb,redisContext *ctx,int instance,int is_
 
     jbuf_append(jb, "\"INSTANCE\":%d", instance);
 
-#define ADD_STR(redis_field, json_field)                     \
-    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf)))  \
-    {                                                        \
-        jbuf_append(jb, ",\"" json_field "\":");             \
-        jbuf_append_escaped(jb, buf);                        \
+#define ADD_STR(redis_field, json_field)                    \
+    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf))) \
+    {                                                       \
+        jbuf_append(jb, ",\"" json_field "\":");            \
+        jbuf_append_escaped(jb, buf);                       \
     }
 
-#define ADD_INT(redis_field, json_field)                     \
-    {                                                        \
-        int v = rget_int(ctx, hash, redis_field, 0);         \
-        jbuf_append(jb, ",\"" json_field "\":%d", v);        \
+#define ADD_INT(redis_field, json_field)              \
+    {                                                 \
+        int v = rget_int(ctx, hash, redis_field, 0);  \
+        jbuf_append(jb, ",\"" json_field "\":%d", v); \
     }
 
-    ADD_INT("primary",                   "PRIMARY");
-    ADD_INT("enable_mqtt",               "ENABLE_MQTT");
+    ADD_INT("primary", "PRIMARY");
+    ADD_INT("enable_mqtt", "ENABLE_MQTT");
 
-    ADD_STR("broker_ip_url",             "BROKER_IP_URL");
-    ADD_INT("broker_port",               "BROKER_PORT");
+    ADD_STR("broker_ip_url", "BROKER_IP_URL");
+    ADD_INT("broker_port", "BROKER_PORT");
 
-    ADD_STR("client_id",                 "CLIENT_ID");
-    ADD_STR("username",                  "USERNAME");
-    ADD_STR("password",                  "PASSWORD");
+    ADD_STR("client_id", "CLIENT_ID");
+    ADD_STR("username", "USERNAME");
+    ADD_STR("password", "PASSWORD");
 
-    ADD_INT("enable_ssl",                "ENABLE_SSL");
-    ADD_INT("encrypted_key",             "ENCRYPTED_KEY");
-    ADD_INT("insecure",                  "INSECURE");
+    ADD_INT("enable_ssl", "ENABLE_SSL");
+    ADD_INT("encrypted_key", "ENCRYPTED_KEY");
+    ADD_INT("insecure", "INSECURE");
 
-    ADD_STR("ca_certificate",            "CA_CERTIFICATE");
-    ADD_STR("client_certificate",        "CLIENT_CERTIFICATE");
-    ADD_STR("client_key",                "CLIENT_KEY");
-    ADD_STR("key_password",              "KEY_PASSWORD");
+    ADD_STR("ca_certificate", "CA_CERTIFICATE");
+    ADD_STR("client_certificate", "CLIENT_CERTIFICATE");
+    ADD_STR("client_key", "CLIENT_KEY");
+    ADD_STR("key_password", "KEY_PASSWORD");
 
-    ADD_INT("qos",                       "QOS");
-    ADD_INT("clean_session",             "CLEAN_SESSION");
-    ADD_INT("keep_alive_interval",       "KEEP_ALIVE_INTERVAL");
+    ADD_INT("qos", "QOS");
+    ADD_INT("clean_session", "CLEAN_SESSION");
+    ADD_INT("keep_alive_interval", "KEEP_ALIVE_INTERVAL");
 
-    ADD_STR("cmd_req_topic",             "CMD_REQ_TOPIC");
-    ADD_STR("cmd_resp_pub_topic",        "CMD_RESP_TOPIC");
+    ADD_STR("cmd_req_topic", "CMD_REQ_TOPIC");
+    ADD_STR("cmd_resp_pub_topic", "CMD_RESP_TOPIC");
 
-    ADD_STR("dlms_data_pub_topic",       "DLMS_DATA_PUB_TOPIC");
-    ADD_INT("dlms_data_pub_interval",    "DLMS_DATA_PUB_INTERVAL");
+    ADD_STR("dlms_data_pub_topic", "DLMS_DATA_PUB_TOPIC");
+    ADD_INT("dlms_data_pub_interval", "DLMS_DATA_PUB_INTERVAL");
 
-    ADD_STR("dlms_inst_pub_topic",       "DLMS_INST_PUB_TOPIC");
-    ADD_INT("dlms_inst_pub_interval",    "DLMS_INST_PUB_INTERVAL");
+    ADD_STR("dlms_inst_pub_topic", "DLMS_INST_PUB_TOPIC");
+    ADD_INT("dlms_inst_pub_interval", "DLMS_INST_PUB_INTERVAL");
 
-    ADD_STR("modbus_data_pub_topic",     "MODBUS_DATA_PUB_TOPIC");
-    ADD_INT("modbus_data_pub_interval",  "MODBUS_DATA_PUB_INTERVAL");
+    ADD_STR("modbus_data_pub_topic", "MODBUS_DATA_PUB_TOPIC");
+    ADD_INT("modbus_data_pub_interval", "MODBUS_DATA_PUB_INTERVAL");
 
-    ADD_STR("hc_pub_topic",              "HC_PUB_TOPIC");
-    ADD_INT("hc_pub_interval",           "HC_PUB_INTERVAL");
+    ADD_STR("hc_pub_topic", "HC_PUB_TOPIC");
+    ADD_INT("hc_pub_interval", "HC_PUB_INTERVAL");
 
 #undef ADD_STR
 #undef ADD_INT
@@ -121,12 +121,12 @@ char *export_mqtt_cfg(redisContext *ctx, cmd_request_t *cmd)
         if (!rhash_exists(ctx, hash))
             continue;
         exported++;
-        export_one_mqtt_cfg(&jb,ctx,i,exported == total);
+        export_one_mqtt_cfg(&jb, ctx, i, exported == total);
     }
 
     jbuf_append(&jb, "]");
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
@@ -137,31 +137,31 @@ static void export_modem_data(jbuf_t *jb, redisContext *ctx)
 
     jbuf_append(jb, "\"MODEM\":{");
 
-#define ADD_STR(redis_field, json_field)                     \
+#define ADD_STR(redis_field, json_field)                           \
     if (rget_str(ctx, "modem_cfg", redis_field, buf, sizeof(buf))) \
-    {                                                        \
-        jbuf_append(jb, "\"" json_field "\":");              \
-        jbuf_append_escaped(jb, buf);                        \
-        jbuf_append(jb, ",");                                \
+    {                                                              \
+        jbuf_append(jb, "\"" json_field "\":");                    \
+        jbuf_append_escaped(jb, buf);                              \
+        jbuf_append(jb, ",");                                      \
     }
 
-#define ADD_INT(redis_field, json_field)                     \
-    {                                                        \
-        int v = rget_int(ctx, "modem_cfg", redis_field, 0);  \
-        jbuf_append(jb, "\"" json_field "\":%d,", v);        \
+#define ADD_INT(redis_field, json_field)                    \
+    {                                                       \
+        int v = rget_int(ctx, "modem_cfg", redis_field, 0); \
+        jbuf_append(jb, "\"" json_field "\":%d,", v);       \
     }
 
     /* Global settings */
     ADD_INT("enable_gprs", "ENABLE_GPRS");
-    ADD_INT("num_sims",    "NUM_SIMS");
-    ADD_STR("sim_sel",     "SIM_SELECTION");
+    ADD_INT("num_sims", "NUM_SIMS");
+    ADD_STR("sim_sel", "SIM_SELECTION");
 
     /* SIM1 */
     jbuf_append(jb, "\"SIM1\":{");
 
-    ADD_STR("apn1",       "APN");
-    ADD_STR("username1",  "USERNAME");
-    ADD_STR("password1",  "PASSWORD");
+    ADD_STR("apn1", "APN");
+    ADD_STR("username1", "USERNAME");
+    ADD_STR("password1", "PASSWORD");
 
     if (rget_str(ctx, "modem_cfg", "phone_num1", buf, sizeof(buf)))
     {
@@ -174,9 +174,9 @@ static void export_modem_data(jbuf_t *jb, redisContext *ctx)
     /* SIM2 */
     jbuf_append(jb, "\"SIM2\":{");
 
-    ADD_STR("apn2",       "APN");
-    ADD_STR("username2",  "USERNAME");
-    ADD_STR("password2",  "PASSWORD");
+    ADD_STR("apn2", "APN");
+    ADD_STR("username2", "USERNAME");
+    ADD_STR("password2", "PASSWORD");
 
     if (rget_str(ctx, "modem_cfg", "phone_num2", buf, sizeof(buf)))
     {
@@ -219,14 +219,14 @@ char *export_modem_cfg(redisContext *ctx, cmd_request_t *cmd)
 
     export_modem_data(&jb, ctx);
 
-    jbuf_append(&jb, "}");   /* DATA */
+    jbuf_append(&jb, "}"); /* DATA */
 
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-static int export_one_ipsec_cfg(jbuf_t *jb,redisContext *ctx,int instance,int is_last)
+static int export_one_ipsec_cfg(jbuf_t *jb, redisContext *ctx, int instance, int is_last)
 {
     char hash[32];
     char buf[256];
@@ -235,63 +235,63 @@ static int export_one_ipsec_cfg(jbuf_t *jb,redisContext *ctx,int instance,int is
     jbuf_append(jb, "{");
     jbuf_append(jb, "\"INSTANCE\":%d", instance);
 
-#define ADD_STR(redis_field, json_field)                     \
-    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf)))  \
-    {                                                        \
-        jbuf_append(jb, ",\"" json_field "\":");             \
-        jbuf_append_escaped(jb, buf);                        \
+#define ADD_STR(redis_field, json_field)                    \
+    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf))) \
+    {                                                       \
+        jbuf_append(jb, ",\"" json_field "\":");            \
+        jbuf_append_escaped(jb, buf);                       \
     }
 
-#define ADD_INT(redis_field, json_field)                     \
-    {                                                        \
-        int v = rget_int(ctx, hash, redis_field, 0);         \
-        jbuf_append(jb, ",\"" json_field "\":%d", v);        \
+#define ADD_INT(redis_field, json_field)              \
+    {                                                 \
+        int v = rget_int(ctx, hash, redis_field, 0);  \
+        jbuf_append(jb, ",\"" json_field "\":%d", v); \
     }
 
-    ADD_INT("enable_tunnel",    "ENABLE_TUNNEL");
-    ADD_STR("tunnel_name",      "TUNNEL_NAME");
+    ADD_INT("enable_tunnel", "ENABLE_TUNNEL");
+    ADD_STR("tunnel_name", "TUNNEL_NAME");
 
-    ADD_STR("left",             "LEFT");
-    ADD_STR("left_id",          "LEFT_ID");
-    ADD_STR("left_src_ip",      "LEFT_SRC_IP");
-    ADD_STR("left_subnet",      "LEFT_SUBNET");
+    ADD_STR("left", "LEFT");
+    ADD_STR("left_id", "LEFT_ID");
+    ADD_STR("left_src_ip", "LEFT_SRC_IP");
+    ADD_STR("left_subnet", "LEFT_SUBNET");
 
-    ADD_STR("right_ip",         "RIGHT_IP");
-    ADD_STR("right_id",         "RIGHT_ID");
-    ADD_STR("right_subnet",     "RIGHT_SUBNET");
+    ADD_STR("right_ip", "RIGHT_IP");
+    ADD_STR("right_id", "RIGHT_ID");
+    ADD_STR("right_subnet", "RIGHT_SUBNET");
 
-    ADD_STR("conn_type",        "CONN_TYPE");
-    ADD_STR("keying_mode",      "KEYING_MODE");
+    ADD_STR("conn_type", "CONN_TYPE");
+    ADD_STR("keying_mode", "KEYING_MODE");
 
-    ADD_STR("pre_shared_key",   "PRE_SHARED_KEY");
+    ADD_STR("pre_shared_key", "PRE_SHARED_KEY");
 
-    ADD_STR("phase1_encrpt",    "PHASE1_ENCRYPT");
-    ADD_STR("phase1_authen",    "PHASE1_AUTH");
-    ADD_STR("phase1_dhgrp",     "PHASE1_DH_GROUP");
+    ADD_STR("phase1_encrpt", "PHASE1_ENCRYPT");
+    ADD_STR("phase1_authen", "PHASE1_AUTH");
+    ADD_STR("phase1_dhgrp", "PHASE1_DH_GROUP");
 
-    ADD_STR("phase2_encrpt",    "PHASE2_ENCRYPT");
-    ADD_STR("phase2_authen",    "PHASE2_AUTH");
-    ADD_STR("phase2_dhgrp",     "PHASE2_DH_GROUP");
+    ADD_STR("phase2_encrpt", "PHASE2_ENCRYPT");
+    ADD_STR("phase2_authen", "PHASE2_AUTH");
+    ADD_STR("phase2_dhgrp", "PHASE2_DH_GROUP");
 
-    ADD_INT("ikelifetime",      "IKE_LIFETIME");
-    ADD_INT("key_life_time",    "KEY_LIFETIME");
+    ADD_INT("ikelifetime", "IKE_LIFETIME");
+    ADD_INT("key_life_time", "KEY_LIFETIME");
 
-    ADD_INT("pfs",              "PFS");
-    ADD_INT("nat_trav",         "NAT_TRAV");
-    ADD_INT("fragmentation",    "FRAGMENTATION");
-    ADD_INT("mobik_mode",       "MOBIKE");
+    ADD_INT("pfs", "PFS");
+    ADD_INT("nat_trav", "NAT_TRAV");
+    ADD_INT("fragmentation", "FRAGMENTATION");
+    ADD_INT("mobik_mode", "MOBIKE");
 
-    ADD_INT("aggr_mode",        "AGGRESSIVE_MODE");
+    ADD_INT("aggr_mode", "AGGRESSIVE_MODE");
 
-    ADD_STR("auto_mode",        "AUTO_MODE");
-    ADD_STR("closeaction",      "CLOSE_ACTION");
+    ADD_STR("auto_mode", "AUTO_MODE");
+    ADD_STR("closeaction", "CLOSE_ACTION");
 
-    ADD_INT("dpd_delay",        "DPD_DELAY");
-    ADD_INT("dpd_timeout",      "DPD_TIMEOUT");
+    ADD_INT("dpd_delay", "DPD_DELAY");
+    ADD_INT("dpd_timeout", "DPD_TIMEOUT");
 
-    ADD_STR("dpd_action",       "DPD_ACTION");
+    ADD_STR("dpd_action", "DPD_ACTION");
 
-    ADD_INT("rekey_margin",     "REKEY_MARGIN");
+    ADD_INT("rekey_margin", "REKEY_MARGIN");
 
 #undef ADD_STR
 #undef ADD_INT
@@ -304,7 +304,7 @@ static int export_one_ipsec_cfg(jbuf_t *jb,redisContext *ctx,int instance,int is
     return 1;
 }
 
-char *export_ipsec_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_ipsec_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
         return NULL;
@@ -314,13 +314,13 @@ char *export_ipsec_cfg(redisContext *ctx,cmd_request_t *cmd)
         return NULL;
     jbuf_append(&jb, "{");
     jbuf_append(&jb,
-        "\"TYPE\":\"command_reply\",");
+                "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb,
-        "\"SEQ_NUM\":");
+                "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
     jbuf_append(&jb,
-        "\"DATA_TYPE\":\"IPSEC\",");
+                "\"DATA_TYPE\":\"IPSEC\",");
     jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
     jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"DATA\":{");
@@ -342,17 +342,17 @@ char *export_ipsec_cfg(redisContext *ctx,cmd_request_t *cmd)
         if (!rhash_exists(ctx, hash))
             continue;
         exported++;
-        export_one_ipsec_cfg(&jb,ctx,i,exported == total);
+        export_one_ipsec_cfg(&jb, ctx, i, exported == total);
     }
 
     jbuf_append(&jb, "]");
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-char *export_iec104_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_iec104_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
         return NULL;
@@ -370,7 +370,7 @@ char *export_iec104_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
     jbuf_append(&jb, "\"DATA_TYPE\":\"IEC104\",");
-    
+
     jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
     jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
@@ -378,79 +378,79 @@ char *export_iec104_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"IEC104\":{");
 
-#define ADD_STR(redis_field,json_field)                    \
-    if (rget_str(ctx,"iec104_0_cfg",redis_field,buf,sizeof(buf))) \
-    {                                                      \
-        jbuf_append(&jb,"\"" json_field "\":");            \
-        jbuf_append_escaped(&jb,buf);                      \
-        jbuf_append(&jb,",");                              \
+#define ADD_STR(redis_field, json_field)                              \
+    if (rget_str(ctx, "iec104_0_cfg", redis_field, buf, sizeof(buf))) \
+    {                                                                 \
+        jbuf_append(&jb, "\"" json_field "\":");                      \
+        jbuf_append_escaped(&jb, buf);                                \
+        jbuf_append(&jb, ",");                                        \
     }
 
-#define ADD_INT(redis_field,json_field)                    \
-    {                                                      \
-        int v = rget_int(ctx,"iec104_0_cfg",redis_field,0);\
-        jbuf_append(&jb,"\"" json_field "\":%d,",v);       \
+#define ADD_INT(redis_field, json_field)                       \
+    {                                                          \
+        int v = rget_int(ctx, "iec104_0_cfg", redis_field, 0); \
+        jbuf_append(&jb, "\"" json_field "\":%d,", v);         \
     }
 
-    ADD_INT("enable_104",             "ENABLE_104");
+    ADD_INT("enable_104", "ENABLE_104");
 
-    ADD_INT("port",                   "PORT");
+    ADD_INT("port", "PORT");
 
-    ADD_INT("max_connections",        "MAX_CONNECTIONS");
+    ADD_INT("max_connections", "MAX_CONNECTIONS");
 
-    ADD_INT("allowed_master_check",   "ALLOWED_MASTER_CHECK");
+    ADD_INT("allowed_master_check", "ALLOWED_MASTER_CHECK");
 
-    ADD_STR("master_0_ip",            "MASTER_0_IP");
-    ADD_INT("master_0_enabled",       "MASTER_0_ENABLED");
+    ADD_STR("master_0_ip", "MASTER_0_IP");
+    ADD_INT("master_0_enabled", "MASTER_0_ENABLED");
 
-    ADD_STR("master_1_ip",            "MASTER_1_IP");
-    ADD_INT("master_1_enabled",       "MASTER_1_ENABLED");
+    ADD_STR("master_1_ip", "MASTER_1_IP");
+    ADD_INT("master_1_enabled", "MASTER_1_ENABLED");
 
-    ADD_INT("enable_tls",             "ENABLE_TLS");
+    ADD_INT("enable_tls", "ENABLE_TLS");
 
-    ADD_STR("ca_certificate",         "CA_CERTIFICATE");
-    ADD_STR("server_certificate",     "SERVER_CERTIFICATE");
-    ADD_STR("server_key",             "SERVER_KEY");
-    ADD_STR("key_password",           "KEY_PASSWORD");
+    ADD_STR("ca_certificate", "CA_CERTIFICATE");
+    ADD_STR("server_certificate", "SERVER_CERTIFICATE");
+    ADD_STR("server_key", "SERVER_KEY");
+    ADD_STR("key_password", "KEY_PASSWORD");
 
-    ADD_INT("encrypted_key",          "ENCRYPTED_KEY");
+    ADD_INT("encrypted_key", "ENCRYPTED_KEY");
 
-    ADD_INT("asdu_addr",              "ASDU_ADDR");
-    ADD_INT("asdu_addr_size",         "ASDU_ADDR_SIZE");
+    ADD_INT("asdu_addr", "ASDU_ADDR");
+    ADD_INT("asdu_addr_size", "ASDU_ADDR_SIZE");
 
-    ADD_INT("cot_addr_size",          "COT_ADDR_SIZE");
+    ADD_INT("cot_addr_size", "COT_ADDR_SIZE");
 
-    ADD_INT("ioa_addr_size",          "IOA_ADDR_SIZE");
+    ADD_INT("ioa_addr_size", "IOA_ADDR_SIZE");
 
-    ADD_INT("ioa_offset",             "IOA_OFFSET");
-    ADD_INT("ioa_offset_modbus",      "IOA_OFFSET_MODBUS");
-    ADD_INT("ioa_offset_command",     "IOA_OFFSET_COMMAND");
+    ADD_INT("ioa_offset", "IOA_OFFSET");
+    ADD_INT("ioa_offset_modbus", "IOA_OFFSET_MODBUS");
+    ADD_INT("ioa_offset_command", "IOA_OFFSET_COMMAND");
 
-    ADD_INT("k",                      "K");
-    ADD_INT("w",                      "W");
+    ADD_INT("k", "K");
+    ADD_INT("w", "W");
 
-    ADD_INT("t0",                     "T0");
-    ADD_INT("t1",                     "T1");
-    ADD_INT("t2",                     "T2");
-    ADD_INT("t3",                     "T3");
+    ADD_INT("t0", "T0");
+    ADD_INT("t1", "T1");
+    ADD_INT("t2", "T2");
+    ADD_INT("t3", "T3");
 
-    ADD_INT("cyclic_int",             "CYCLIC_INTERVAL");
+    ADD_INT("cyclic_int", "CYCLIC_INTERVAL");
 
 #undef ADD_STR
 #undef ADD_INT
 
     /* Remove last comma */
-    if (jb.len && jb.data[jb.len-1] == ',')
+    if (jb.len && jb.data[jb.len - 1] == ',')
         jb.data[--jb.len] = '\0';
 
-    jbuf_append(&jb, "}");   /* IEC104 */
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "}"); /* IEC104 */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-char *export_iec101_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_iec101_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
         return NULL;
@@ -473,84 +473,84 @@ char *export_iec101_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"IEC101\":{");
 
-#define ADD_STR(redis_field,json_field)                                  \
-    if (rget_str(ctx,"iec101_0_cfg",redis_field,buf,sizeof(buf)))         \
-    {                                                                     \
-        jbuf_append(&jb,"\"" json_field "\":");                           \
-        jbuf_append_escaped(&jb,buf);                                     \
-        jbuf_append(&jb,",");                                             \
+#define ADD_STR(redis_field, json_field)                              \
+    if (rget_str(ctx, "iec101_0_cfg", redis_field, buf, sizeof(buf))) \
+    {                                                                 \
+        jbuf_append(&jb, "\"" json_field "\":");                      \
+        jbuf_append_escaped(&jb, buf);                                \
+        jbuf_append(&jb, ",");                                        \
     }
 
-#define ADD_INT(redis_field,json_field)                                  \
-    {                                                                    \
-        int v=rget_int(ctx,"iec101_0_cfg",redis_field,0);                \
-        jbuf_append(&jb,"\"" json_field "\":%d,",v);                     \
+#define ADD_INT(redis_field, json_field)                       \
+    {                                                          \
+        int v = rget_int(ctx, "iec101_0_cfg", redis_field, 0); \
+        jbuf_append(&jb, "\"" json_field "\":%d,", v);         \
     }
 
-    ADD_INT("enable_101","ENABLE_101");
+    ADD_INT("enable_101", "ENABLE_101");
 
-    ADD_INT("port","PORT");
+    ADD_INT("port", "PORT");
 
-    ADD_INT("max_connections","MAX_CONNECTIONS");
+    ADD_INT("max_connections", "MAX_CONNECTIONS");
 
-    ADD_INT("allowed_master_check","ALLOWED_MASTER_CHECK");
+    ADD_INT("allowed_master_check", "ALLOWED_MASTER_CHECK");
 
-    ADD_STR("master_0_ip","MASTER_0_IP");
-    ADD_INT("master_0_enabled","MASTER_0_ENABLED");
+    ADD_STR("master_0_ip", "MASTER_0_IP");
+    ADD_INT("master_0_enabled", "MASTER_0_ENABLED");
 
-    ADD_STR("master_1_ip","MASTER_1_IP");
-    ADD_INT("master_1_enabled","MASTER_1_ENABLED");
+    ADD_STR("master_1_ip", "MASTER_1_IP");
+    ADD_INT("master_1_enabled", "MASTER_1_ENABLED");
 
-    ADD_INT("enable_tls","ENABLE_TLS");
+    ADD_INT("enable_tls", "ENABLE_TLS");
 
-    ADD_STR("ca_certificate","CA_CERTIFICATE");
-    ADD_STR("server_certificate","SERVER_CERTIFICATE");
-    ADD_STR("server_key","SERVER_KEY");
-    ADD_STR("key_password","KEY_PASSWORD");
+    ADD_STR("ca_certificate", "CA_CERTIFICATE");
+    ADD_STR("server_certificate", "SERVER_CERTIFICATE");
+    ADD_STR("server_key", "SERVER_KEY");
+    ADD_STR("key_password", "KEY_PASSWORD");
 
-    ADD_INT("encrypted_key","ENCRYPTED_KEY");
+    ADD_INT("encrypted_key", "ENCRYPTED_KEY");
 
-    ADD_INT("asdu_addr","ASDU_ADDR");
-    ADD_INT("asdu_addr_size","ASDU_ADDR_SIZE");
+    ADD_INT("asdu_addr", "ASDU_ADDR");
+    ADD_INT("asdu_addr_size", "ASDU_ADDR_SIZE");
 
-    ADD_INT("cot_addr_size","COT_ADDR_SIZE");
+    ADD_INT("cot_addr_size", "COT_ADDR_SIZE");
 
-    ADD_INT("ioa_addr_size","IOA_ADDR_SIZE");
+    ADD_INT("ioa_addr_size", "IOA_ADDR_SIZE");
 
-    ADD_INT("ioa_offset","IOA_OFFSET");
-    ADD_INT("ioa_offset_modbus","IOA_OFFSET_MODBUS");
-    ADD_INT("ioa_offset_command","IOA_OFFSET_COMMAND");
+    ADD_INT("ioa_offset", "IOA_OFFSET");
+    ADD_INT("ioa_offset_modbus", "IOA_OFFSET_MODBUS");
+    ADD_INT("ioa_offset_command", "IOA_OFFSET_COMMAND");
 
     /* IEC101 Specific */
 
-    ADD_INT("link_addr","LINK_ADDR");
-    ADD_INT("link_addr_size","LINK_ADDR_SIZE");
+    ADD_INT("link_addr", "LINK_ADDR");
+    ADD_INT("link_addr_size", "LINK_ADDR_SIZE");
 
-    ADD_INT("balanced_mode","BALANCED_MODE");
+    ADD_INT("balanced_mode", "BALANCED_MODE");
 
-    ADD_INT("single_char_ack","SINGLE_CHAR_ACK");
+    ADD_INT("single_char_ack", "SINGLE_CHAR_ACK");
 
-    ADD_INT("link_layer_timeout_ms","LINK_LAYER_TIMEOUT_MS");
+    ADD_INT("link_layer_timeout_ms", "LINK_LAYER_TIMEOUT_MS");
 
-    ADD_INT("link_layer_retries","LINK_LAYER_RETRIES");
+    ADD_INT("link_layer_retries", "LINK_LAYER_RETRIES");
 
-    ADD_INT("cyclic_int","CYCLIC_INTERVAL");
+    ADD_INT("cyclic_int", "CYCLIC_INTERVAL");
 
 #undef ADD_STR
 #undef ADD_INT
 
     /* Remove trailing comma */
-    if (jb.len && jb.data[jb.len-1] == ',')
+    if (jb.len && jb.data[jb.len - 1] == ',')
         jb.data[--jb.len] = '\0';
 
-    jbuf_append(&jb, "}");   /* IEC101 */
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "}"); /* IEC101 */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-char *export_ftp_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_ftp_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
         return NULL;
@@ -575,8 +575,8 @@ char *export_ftp_cfg(redisContext *ctx,cmd_request_t *cmd)
     jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"FTP\":{");
     jbuf_append(&jb,
-        "\"FTP_ENABLE\":%d,",
-        rget_int(ctx, "ftp_cfg", "ftp_enable", 0));
+                "\"FTP_ENABLE\":%d,",
+                rget_int(ctx, "ftp_cfg", "ftp_enable", 0));
 
     jbuf_append(&jb, "\"SERVERS\":[");
 
@@ -585,53 +585,53 @@ char *export_ftp_cfg(redisContext *ctx,cmd_request_t *cmd)
         jbuf_append(&jb, "{");
 
         jbuf_append(&jb,
-            "\"INSTANCE\":%d,",
-            i);
+                    "\"INSTANCE\":%d,",
+                    i);
 
         char field[64];
 
         sprintf(field, "server_enable_%d", i);
         jbuf_append(&jb,
-            "\"SERVER_ENABLE\":%d,",
-            rget_int(ctx, "ftp_cfg", field, 0));
+                    "\"SERVER_ENABLE\":%d,",
+                    rget_int(ctx, "ftp_cfg", field, 0));
 
         sprintf(field, "ip_addr_%d", i);
         rget_str(ctx, "ftp_cfg", field, buf, sizeof(buf));
         jbuf_append(&jb,
-            "\"IP_ADDRESS\":");
+                    "\"IP_ADDRESS\":");
         jbuf_append_escaped(&jb, buf);
         jbuf_append(&jb, ",");
 
         sprintf(field, "port_%d", i);
         jbuf_append(&jb,
-            "\"PORT\":%d,",
-            rget_int(ctx, "ftp_cfg", field, 21));
+                    "\"PORT\":%d,",
+                    rget_int(ctx, "ftp_cfg", field, 21));
 
         sprintf(field, "username_%d", i);
         rget_str(ctx, "ftp_cfg", field, buf, sizeof(buf));
         jbuf_append(&jb,
-            "\"USERNAME\":");
+                    "\"USERNAME\":");
         jbuf_append_escaped(&jb, buf);
         jbuf_append(&jb, ",");
 
         sprintf(field, "password_%d", i);
         rget_str(ctx, "ftp_cfg", field, buf, sizeof(buf));
         jbuf_append(&jb,
-            "\"PASSWORD\":");
+                    "\"PASSWORD\":");
         jbuf_append_escaped(&jb, buf);
         jbuf_append(&jb, ",");
 
         sprintf(field, "remote_directory_%d", i);
         rget_str(ctx, "ftp_cfg", field, buf, sizeof(buf));
         jbuf_append(&jb,
-            "\"REMOTE_DIRECTORY\":");
+                    "\"REMOTE_DIRECTORY\":");
         jbuf_append_escaped(&jb, buf);
         jbuf_append(&jb, ",");
 
         sprintf(field, "time_interval_%d", i);
         jbuf_append(&jb,
-            "\"TIME_INTERVAL\":%d",
-            rget_int(ctx, "ftp_cfg", field, 0));
+                    "\"TIME_INTERVAL\":%d",
+                    rget_int(ctx, "ftp_cfg", field, 0));
 
         jbuf_append(&jb, "}");
 
@@ -639,15 +639,15 @@ char *export_ftp_cfg(redisContext *ctx,cmd_request_t *cmd)
             jbuf_append(&jb, ",");
     }
 
-    jbuf_append(&jb, "]");   /* SERVERS */
-    jbuf_append(&jb, "}");   /* FTP */
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "]"); /* SERVERS */
+    jbuf_append(&jb, "}"); /* FTP */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-char *export_ntp_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_ntp_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
         return NULL;
@@ -675,36 +675,36 @@ char *export_ntp_cfg(redisContext *ctx,cmd_request_t *cmd)
 
     jbuf_append(&jb, "\"NTP\":{");
 
-#define ADD_STR(redis_field,json_field)                                  \
-    if (rget_str(ctx,"ntp_cfg",redis_field,buf,sizeof(buf)))             \
-    {                                                                    \
-        jbuf_append(&jb,"\"" json_field "\":");                          \
-        jbuf_append_escaped(&jb,buf);                                    \
-        jbuf_append(&jb,",");                                            \
+#define ADD_STR(redis_field, json_field)                         \
+    if (rget_str(ctx, "ntp_cfg", redis_field, buf, sizeof(buf))) \
+    {                                                            \
+        jbuf_append(&jb, "\"" json_field "\":");                 \
+        jbuf_append_escaped(&jb, buf);                           \
+        jbuf_append(&jb, ",");                                   \
     }
 
-#define ADD_INT(redis_field,json_field)                                  \
-    {                                                                    \
-        int v=rget_int(ctx,"ntp_cfg",redis_field,0);                     \
-        jbuf_append(&jb,"\"" json_field "\":%d,",v);                     \
+#define ADD_INT(redis_field, json_field)                  \
+    {                                                     \
+        int v = rget_int(ctx, "ntp_cfg", redis_field, 0); \
+        jbuf_append(&jb, "\"" json_field "\":%d,", v);    \
     }
 
-    ADD_INT("enable_ntp1","ENABLE_NTP1");
-    ADD_INT("enable_ntp2","ENABLE_NTP2");
+    ADD_INT("enable_ntp1", "ENABLE_NTP1");
+    ADD_INT("enable_ntp2", "ENABLE_NTP2");
 
-    ADD_STR("ntp1_server_ip","NTP1_SERVER_IP");
-    ADD_INT("ntp1_port","NTP1_PORT");
+    ADD_STR("ntp1_server_ip", "NTP1_SERVER_IP");
+    ADD_INT("ntp1_port", "NTP1_PORT");
 
-    ADD_STR("ntp2_server_ip","NTP2_SERVER_IP");
-    ADD_INT("ntp2_port","NTP2_PORT");
+    ADD_STR("ntp2_server_ip", "NTP2_SERVER_IP");
+    ADD_INT("ntp2_port", "NTP2_PORT");
 
-    ADD_INT("interval","SYNC_INTERVAL_HOURS");
+    ADD_INT("interval", "SYNC_INTERVAL_HOURS");
 
-    ADD_STR("ntp_sync_status","SYNC_STATUS");
-    ADD_STR("ntp_sync_time","LAST_SYNC_TIME");
-    ADD_STR("next_sync_time","NEXT_SYNC_TIME");
-    ADD_STR("synced_server","SYNCED_SERVER");
-    ADD_STR("failure_reason","FAILURE_REASON");
+    ADD_STR("ntp_sync_status", "SYNC_STATUS");
+    ADD_STR("ntp_sync_time", "LAST_SYNC_TIME");
+    ADD_STR("next_sync_time", "NEXT_SYNC_TIME");
+    ADD_STR("synced_server", "SYNCED_SERVER");
+    ADD_STR("failure_reason", "FAILURE_REASON");
 
 #undef ADD_STR
 #undef ADD_INT
@@ -713,21 +713,21 @@ char *export_ntp_cfg(redisContext *ctx,cmd_request_t *cmd)
     if (jb.len && jb.data[jb.len - 1] == ',')
         jb.data[--jb.len] = '\0';
 
-    jbuf_append(&jb, "}");   /* NTP */
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "}"); /* NTP */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-static void export_modtcp_register_cfgs(jbuf_t *jb,redisContext *ctx,int dev_id)
+static void export_modtcp_register_cfgs(jbuf_t *jb, redisContext *ctx, int dev_id)
 {
     char hash[64];
     char buf[128];
 
     /* Register parameter names */
     jbuf_append(jb,
-    "\"REGISTER_FIELDS\":[\"REGISTER_NO\",\"NAME\",\"ADDRESS\",\"FUNCTION\",\"DATA_TYPE\",\"NUM_REGS\",\"BYTE_ORDER\",\"SCALE_FACTOR\",\"ZERO_VALUE\",\"MAP_PROTO\",\"MAP_PROTO_101\",\"REPORT_MODE\",\"TOL_MIN\",\"TOL_MAX\",\"TOL_PER\",\"SEND_SMS\"],");
+                "\"REGISTER_FIELDS\":[\"REGISTER_NO\",\"NAME\",\"ADDRESS\",\"FUNCTION\",\"DATA_TYPE\",\"NUM_REGS\",\"BYTE_ORDER\",\"SCALE_FACTOR\",\"ZERO_VALUE\",\"MAP_PROTO\",\"MAP_PROTO_101\",\"REPORT_MODE\",\"TOL_MIN\",\"TOL_MAX\",\"TOL_PER\",\"SEND_SMS\"],");
 
     /* Register values */
     jbuf_append(jb, "\"REGISTERS\":[");
@@ -791,7 +791,7 @@ static void export_modtcp_register_cfgs(jbuf_t *jb,redisContext *ctx,int dev_id)
     jbuf_append(jb, "]");
 }
 
-char *export_modtcp_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_modtcp_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
         return NULL;
@@ -843,46 +843,46 @@ char *export_modtcp_cfg(redisContext *ctx,cmd_request_t *cmd)
 
         jbuf_append(&jb, "{");
 
-#define ADD_STR(redis_field,json_field)                                 \
-        if (rget_str(ctx, hash, redis_field, buf, sizeof(buf)))          \
-        {                                                                \
-            jbuf_append(&jb,"\"" json_field "\":");                      \
-            jbuf_append_escaped(&jb,buf);                                \
-            jbuf_append(&jb,",");                                        \
-        }
+#define ADD_STR(redis_field, json_field)                    \
+    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf))) \
+    {                                                       \
+        jbuf_append(&jb, "\"" json_field "\":");            \
+        jbuf_append_escaped(&jb, buf);                      \
+        jbuf_append(&jb, ",");                              \
+    }
 
-#define ADD_INT(redis_field,json_field)                                 \
-        {                                                                \
-            int v=rget_int(ctx,hash,redis_field,0);                      \
-            jbuf_append(&jb,"\"" json_field "\":%d,",v);                 \
-        }
+#define ADD_INT(redis_field, json_field)               \
+    {                                                  \
+        int v = rget_int(ctx, hash, redis_field, 0);   \
+        jbuf_append(&jb, "\"" json_field "\":%d,", v); \
+    }
 
-        ADD_INT("dev_id",             "DEVICE_ID");
-        ADD_INT("enable_device",      "ENABLE_DEVICE");
+        ADD_INT("dev_id", "DEVICE_ID");
+        ADD_INT("enable_device", "ENABLE_DEVICE");
 
-        ADD_STR("dev_name",           "DEVICE_NAME");
-        ADD_STR("loc_name",           "LOCATION");
+        ADD_STR("dev_name", "DEVICE_NAME");
+        ADD_STR("loc_name", "LOCATION");
 
-        ADD_STR("dev_ip",             "IP_ADDRESS");
-        ADD_INT("dev_port",           "PORT");
+        ADD_STR("dev_ip", "IP_ADDRESS");
+        ADD_INT("dev_port", "PORT");
 
-        ADD_INT("slave_id",           "SLAVE_ID");
+        ADD_INT("slave_id", "SLAVE_ID");
 
-        ADD_INT("num_points",         "NUM_POINTS");
+        ADD_INT("num_points", "NUM_POINTS");
 
-        ADD_INT("resp_timeout",       "RESPONSE_TIMEOUT");
-        ADD_INT("retries",            "RETRIES");
+        ADD_INT("resp_timeout", "RESPONSE_TIMEOUT");
+        ADD_INT("retries", "RETRIES");
 
-        ADD_INT("poll_faulty_cnt",    "POLL_FAULTY_COUNT");
-        ADD_INT("inter_frame_delay",  "INTER_FRAME_DELAY");
+        ADD_INT("poll_faulty_cnt", "POLL_FAULTY_COUNT");
+        ADD_INT("inter_frame_delay", "INTER_FRAME_DELAY");
 
-        ADD_STR("meter_type",         "METER_TYPE");
+        ADD_STR("meter_type", "METER_TYPE");
 
 #undef ADD_STR
 #undef ADD_INT
 
         /* remove last comma */
-        if (jb.len && jb.data[jb.len-1] == ',')
+        if (jb.len && jb.data[jb.len - 1] == ',')
             jb.data[--jb.len] = '\0';
 
         /* Add comma because REGISTERS will follow */
@@ -895,21 +895,20 @@ char *export_modtcp_cfg(redisContext *ctx,cmd_request_t *cmd)
             jbuf_append(&jb, ",");
     }
 
-    jbuf_append(&jb, "]");   /* MODBUS_TCP */
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "]"); /* MODBUS_TCP */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
 
     return jb.data;
 }
 
-
-static void export_modrtu_register_cfgs(jbuf_t *jb,redisContext *ctx,int port,int dev)
+static void export_modrtu_register_cfgs(jbuf_t *jb, redisContext *ctx, int port, int dev)
 {
     char hash[64];
     char buf[128];
 
     jbuf_append(jb,
-        "\"REGISTER_FIELDS\":[\"REGISTER_NO\",\"NAME\",\"ADDRESS\",\"FUNCTION\",\"DATA_TYPE\",\"NUM_REGS\",\"BYTE_ORDER\",\"SCALE_FACTOR\",\"MAP_PROTO\",\"MAP_PROTO_101\",\"REPORT_MODE\",\"TOL_MIN\",\"TOL_MAX\",\"TOL_PER\"],");
+                "\"REGISTER_FIELDS\":[\"REGISTER_NO\",\"NAME\",\"ADDRESS\",\"FUNCTION\",\"DATA_TYPE\",\"NUM_REGS\",\"BYTE_ORDER\",\"SCALE_FACTOR\",\"MAP_PROTO\",\"MAP_PROTO_101\",\"REPORT_MODE\",\"TOL_MIN\",\"TOL_MAX\",\"TOL_PER\"],");
 
     jbuf_append(jb, "\"REGISTERS\":[");
 
@@ -917,7 +916,7 @@ static void export_modrtu_register_cfgs(jbuf_t *jb,redisContext *ctx,int port,in
 
     for (int reg = 0; reg < MAX_REGS_PER_DEV; reg++)
     {
-        sprintf(hash,"modrtu_serial%d_%d_reg_%d_cfg",port,dev,reg);
+        sprintf(hash, "modrtu_serial%d_%d_reg_%d_cfg", port, dev, reg);
         if (!rhash_exists(ctx, hash))
             continue;
         if (!first)
@@ -975,8 +974,7 @@ static void export_modrtu_register_cfgs(jbuf_t *jb,redisContext *ctx,int port,in
     jbuf_append(jb, "]");
 }
 
-
-static int export_one_modrtu_cfg(jbuf_t *jb,redisContext *ctx,int port,int dev,int is_last)
+static int export_one_modrtu_cfg(jbuf_t *jb, redisContext *ctx, int port, int dev, int is_last)
 {
     char hash[64];
     char buf[256];
@@ -988,42 +986,42 @@ static int export_one_modrtu_cfg(jbuf_t *jb,redisContext *ctx,int port,int dev,i
 
     jbuf_append(jb, "{");
 
-#define ADD_STR(redis_field,json_field)                               \
-    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf)))            \
-    {                                                                  \
-        jbuf_append(jb, "\"" json_field "\":");                        \
-        jbuf_append_escaped(jb, buf);                                  \
-        jbuf_append(jb, ",");                                          \
+#define ADD_STR(redis_field, json_field)                    \
+    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf))) \
+    {                                                       \
+        jbuf_append(jb, "\"" json_field "\":");             \
+        jbuf_append_escaped(jb, buf);                       \
+        jbuf_append(jb, ",");                               \
     }
 
-#define ADD_INT(redis_field,json_field)                               \
-    {                                                                  \
-        int v = rget_int(ctx, hash, redis_field, 0);                   \
-        jbuf_append(jb, "\"" json_field "\":%d,", v);                  \
+#define ADD_INT(redis_field, json_field)              \
+    {                                                 \
+        int v = rget_int(ctx, hash, redis_field, 0);  \
+        jbuf_append(jb, "\"" json_field "\":%d,", v); \
     }
 
-    ADD_INT("dev_id",            "DEVICE_ID");
-    ADD_INT("enable_device",     "ENABLE_DEVICE");
+    ADD_INT("dev_id", "DEVICE_ID");
+    ADD_INT("enable_device", "ENABLE_DEVICE");
 
-    ADD_STR("dev_name",          "DEVICE_NAME");
-    ADD_STR("loc_name",          "LOCATION");
+    ADD_STR("dev_name", "DEVICE_NAME");
+    ADD_STR("loc_name", "LOCATION");
 
-    ADD_INT("slave_id",          "SLAVE_ID");
-    ADD_INT("num_points",        "NUM_POINTS");
+    ADD_INT("slave_id", "SLAVE_ID");
+    ADD_INT("num_points", "NUM_POINTS");
 
-    ADD_INT("resp_timeout",      "RESPONSE_TIMEOUT");
-    ADD_INT("retries",           "RETRIES");
+    ADD_INT("resp_timeout", "RESPONSE_TIMEOUT");
+    ADD_INT("retries", "RETRIES");
 
-    ADD_INT("poll_faulty_cnt",   "POLL_FAULTY_COUNT");
+    ADD_INT("poll_faulty_cnt", "POLL_FAULTY_COUNT");
     ADD_INT("inter_frame_delay", "INTER_FRAME_DELAY");
 
-    ADD_STR("meter_type",        "METER_TYPE");
+    ADD_STR("meter_type", "METER_TYPE");
 
 #undef ADD_STR
 #undef ADD_INT
 
     /* Remove trailing comma */
-    if (jb->len && jb->data[jb->len-1] == ',')
+    if (jb->len && jb->data[jb->len - 1] == ',')
         jb->data[--jb->len] = '\0';
 
     jbuf_append(jb, ",");
@@ -1036,7 +1034,7 @@ static int export_one_modrtu_cfg(jbuf_t *jb,redisContext *ctx,int port,int dev,i
     return 1;
 }
 
-char *export_modrtu_cfg(redisContext *ctx,cmd_request_t *cmd)
+char *export_modrtu_cfg(redisContext *ctx, cmd_request_t *cmd)
 {
     printf("Entering MODRTU...\n");
     if (!ctx || !cmd)
@@ -1077,7 +1075,7 @@ char *export_modrtu_cfg(redisContext *ctx,cmd_request_t *cmd)
         for (int dev = 0; dev < MAX_RTU_DEVICES; dev++)
         {
             char hash[64];
-            sprintf(hash,"modrtu_serial%d_%d_cfg",port,dev);
+            sprintf(hash, "modrtu_serial%d_%d_cfg", port, dev);
             if (rhash_exists(ctx, hash))
                 total++;
         }
@@ -1100,20 +1098,256 @@ char *export_modrtu_cfg(redisContext *ctx,cmd_request_t *cmd)
         for (int dev = 0; dev < MAX_RTU_DEVICES; dev++)
         {
             char hash[64];
-            sprintf(hash,"modrtu_serial%d_%d_cfg",port,dev);
+            sprintf(hash, "modrtu_serial%d_%d_cfg", port, dev);
             if (!rhash_exists(ctx, hash))
                 continue;
 
             exported++;
-            export_one_modrtu_cfg(&jb,ctx,port,dev,exported == total);
+            export_one_modrtu_cfg(&jb, ctx, port, dev, exported == total);
         }
     }
 
-    jbuf_append(&jb, "]");   /* MODBUS_RTU */
-    jbuf_append(&jb, "}");   /* DATA */
-    jbuf_append(&jb, "}");   /* ROOT */
+    jbuf_append(&jb, "]"); /* MODBUS_RTU */
+    jbuf_append(&jb, "}"); /* DATA */
+    jbuf_append(&jb, "}"); /* ROOT */
     printf("All build completed..\n");
-    printf("%s\n",jb.data);
+    printf("%s\n", jb.data);
+    return jb.data;
+}
+
+char *export_dlms_serial_cfg(redisContext *ctx, cmd_request_t *cmd)
+{
+    if (!ctx || !cmd)
+        return NULL;
+
+    jbuf_t jb;
+    char buf[256];
+    char key[64];
+
+    if (jbuf_init(&jb) < 0)
+        return NULL;
+
+    jbuf_append(&jb, "{");
+
+    /* Header */
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
+    jbuf_append(&jb, "\"SEQ_NUM\":");
+    jbuf_append_escaped(&jb, cmd->transaction);
+    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":");
+    jbuf_append_escaped(&jb, cmd->type);
+    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"DLMS_SERIAL\",");
+
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
+
+    /* DATA */
+    jbuf_append(&jb, "\"DATA\":{");
+
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+
+    jbuf_append(&jb, "\"DLMS_SERIAL\":{");
+
+#define ADD_STR(hash, redis_field, json_field)              \
+    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf))) \
+    {                                                       \
+        jbuf_append(&jb, "\"" json_field "\":");            \
+        jbuf_append_escaped(&jb, buf);                      \
+    }
+
+    for (int i = 0; i < MAX_SERIAL_PORTS; i++)
+    {
+        jbuf_append(&jb, "\"SERIAL_PORT_%d\":{", i + 1);
+
+        char hash_name[64];
+        sprintf(hash_name, "serial_port_%d_cfg", i);
+
+        if (!rhash_exists(ctx, hash_name))
+            continue;
+        if (rget_int(ctx, hash_name, "device_type", 0) != 1 && i != MAX_SERIAL_PORTS-1)
+        {
+            jbuf_append(&jb, "},");
+            continue;
+        }
+        else{
+             jbuf_append(&jb, "}");
+            continue;
+        }
+
+        int num_meters = rget_int(ctx, hash_name, "num_dev", 0);
+
+        jbuf_append(&jb, "\"NUM_METERS\": %d", num_meters);
+        jbuf_append(&jb, ",");
+        jbuf_append(&jb, "\"METER_DATA\":[");
+
+        for (int j = 0; j < num_meters; j++)
+        {
+            jbuf_append(&jb, "{");
+            memset(key, 0, sizeof(key));
+            sprintf(key, "enable_meter[%d]", j + 1);
+            int enbl_meter = rget_int(ctx, hash_name, key, -1);
+            if (enbl_meter)
+            {
+                jbuf_append(&jb, "\"ENABLE_METER\": \"%s\"", "YES");
+            }
+            else
+            {
+                jbuf_append(&jb, "\"ENABLE_METER\": \"%s\"", "NO");
+            }
+
+            jbuf_append(&jb, ",");
+
+            memset(key, 0, sizeof(key));
+            sprintf(key, "meter_loc[%d]", j + 1);
+            ADD_STR(hash_name, key, "METER_NAME");
+            jbuf_append(&jb, ",");
+
+            memset(key, 0, sizeof(key));
+            sprintf(key, "meter_addr[%d]", j + 1);
+            ADD_STR(hash_name, key, "METER_ADDRESS");
+            jbuf_append(&jb, ",");
+
+            memset(key, 0, sizeof(key));
+            sprintf(key, "password[%d]", j + 1);
+            ADD_STR(hash_name, key, "METER_PASSWORD");
+            if (j == num_meters - 1)
+            {
+                jbuf_append(&jb, "}");
+            }
+            else
+            {
+                jbuf_append(&jb, "},");
+            }
+        }
+        jbuf_append(&jb, "]");
+        if (i == MAX_SERIAL_PORTS - 1)
+        {
+            jbuf_append(&jb, "}");
+        }
+        else
+        {
+            jbuf_append(&jb, "},");
+        }
+    }
+
+#undef ADD_STR
+
+    jbuf_append(&jb, "}");
+    jbuf_append(&jb, "}");
+    jbuf_append(&jb, "}");
+    return jb.data;
+}
+
+char *export_dlms_ethernet_cfg(redisContext *ctx, cmd_request_t *cmd)
+{
+    if (!ctx || !cmd)
+        return NULL;
+
+    jbuf_t jb;
+    char buf[256];
+    char key[64];
+
+    if (jbuf_init(&jb) < 0)
+        return NULL;
+
+    jbuf_append(&jb, "{");
+
+    /* Header */
+    jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
+    jbuf_append(&jb, "\"SEQ_NUM\":");
+    jbuf_append_escaped(&jb, cmd->transaction);
+    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"DATA_TYPE\":\"DLMS_ETHERNET\",");
+
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
+
+    /* DATA */
+    jbuf_append(&jb, "\"DATA\":{");
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+
+    jbuf_append(&jb, "\"DLMS_ETHERNET\":{");
+
+#define ADD_STR(hash, redis_field, json_field)              \
+    if (rget_str(ctx, hash, redis_field, buf, sizeof(buf))) \
+    {                                                       \
+        jbuf_append(&jb, "\"" json_field "\":");            \
+        jbuf_append_escaped(&jb, buf);                      \
+    }
+
+    char hash_name[64];
+    sprintf(hash_name, "ethernet_meter_cfg");
+
+    if (!rhash_exists(ctx, hash_name))
+    {
+        LOG_INFO("%s doesn't exist", hash_name);
+        return -1;
+    }
+
+    int num_meters = rget_int(ctx, hash_name, "num_meters", 0);
+
+    jbuf_append(&jb, "\"NUM_METERS\": %d", num_meters);
+    jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"METER_DATA\":[");
+
+    for (int j = 0; j < num_meters; j++)
+    {
+        jbuf_append(&jb, "{");
+        memset(key, 0, sizeof(key));
+        sprintf(key, "enable_meter[%d]", j);
+        int enbl_meter = rget_int(ctx, hash_name, key, -1);
+        if (enbl_meter)
+        {
+            jbuf_append(&jb, "\"ENABLE_METER\": \"%s\"", "YES");
+        }
+        else
+        {
+            jbuf_append(&jb, "\"ENABLE_METER\": \"%s\"", "NO");
+        }
+
+        jbuf_append(&jb, ",");
+
+        memset(key, 0, sizeof(key));
+        sprintf(key, "ip_addr[%d]", j);
+        ADD_STR(hash_name, key, "MTER_IP_ADDRESS");
+        jbuf_append(&jb, ",");
+
+        memset(key, 0, sizeof(key));
+        sprintf(key, "port[%d]", j);
+        ADD_STR(hash_name, key, "PORT");
+        jbuf_append(&jb, ",");
+
+        memset(key, 0, sizeof(key));
+        sprintf(key, "meter_loc[%d]", j);
+        ADD_STR(hash_name, key, "METER_NAME");
+        jbuf_append(&jb, ",");
+
+        memset(key, 0, sizeof(key));
+        sprintf(key, "meter_addr[%d]", j);
+        ADD_STR(hash_name, key, "METER_ADDRESS");
+        jbuf_append(&jb, ",");
+
+        memset(key, 0, sizeof(key));
+        sprintf(key, "password[%d]", j);
+        ADD_STR(hash_name, key, "METER_PASSWORD");
+        if (j == num_meters - 1)
+        {
+            jbuf_append(&jb, "}");
+        }
+        else
+        {
+            jbuf_append(&jb, "},");
+        }
+    }
+
+#undef ADD_STR
+    jbuf_append(&jb, "]");
+    jbuf_append(&jb, "}");
+    jbuf_append(&jb, "}");
+    jbuf_append(&jb, "}");
     return jb.data;
 }
 
@@ -1152,7 +1386,11 @@ char *get_cfg_export_json(redisContext *ctx, cmd_request_t *cmd)
     if (!strcmp(cmd->data_type_req, "NTP"))
         return export_ntp_cfg(ctx, cmd);
 
+    if (!strcmp(cmd->data_type_req, "DLMS_SERIAL"))
+        return export_dlms_serial_cfg(ctx, cmd);
+
+    if (!strcmp(cmd->data_type_req, "DLMS_ETHERNET"))
+        return export_dlms_ethernet_cfg(ctx, cmd);
 
     return NULL;
 }
-

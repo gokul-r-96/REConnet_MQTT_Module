@@ -909,7 +909,6 @@ void cdf_write_footer(FILE *fp)
 //     return result;
 // }
 
-
 void json_write_header(FILE *fp)
 {
     fprintf(fp, "{\n");
@@ -983,18 +982,18 @@ void json_write_general(redisContext *ctx, FILE *fp, const char *serial, const c
     }
 
     const char *location = cJSON_GetObjectItem(j, "location")->valuestring;
-    const char *port     = cJSON_GetObjectItem(j, "port")->valuestring;
+    const char *port = cJSON_GetObjectItem(j, "port")->valuestring;
 
     char *dcu_name = redis_hget(ctx, DCU_HASH, "device");
-    char *attr1    = redis_hget(ctx, HASH_GENERAL_CDF, "attribute1");
-    char *attr2    = redis_hget(ctx, HASH_GENERAL_CDF, "attribute2");
-    char *attr3    = redis_hget(ctx, HASH_GENERAL_CDF, "attribute3");
-    char *attr4    = redis_hget(ctx, HASH_GENERAL_CDF, "attribute4");
-    char *attr5    = redis_hget(ctx, HASH_GENERAL_CDF, "attribute5");
-    char *dcu_ser  = redis_hget(ctx, DCU_HASH, "serial_num");
-    char *fw_ver   = redis_hget(ctx, DCU_HASH, "fw_ver");
+    char *attr1 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute1");
+    char *attr2 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute2");
+    char *attr3 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute3");
+    char *attr4 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute4");
+    char *attr5 = redis_hget(ctx, HASH_GENERAL_CDF, "attribute5");
+    char *dcu_ser = redis_hget(ctx, DCU_HASH, "serial_num");
+    char *fw_ver = redis_hget(ctx, DCU_HASH, "fw_ver");
     char *modem_imei = redis_hget(ctx, "modem_status", "imei");
-    char *dcu_loc  = redis_hget(ctx, DCU_HASH, "dcu_loc");
+    char *dcu_loc = redis_hget(ctx, DCU_HASH, "dcu_loc");
 
     fprintf(fp, "  \"NP\": {\n");
     fprintf(fp, "    \"DEVNAME\": \"%s\",\n", dcu_name);
@@ -1069,9 +1068,9 @@ void json_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
 {
     char field_key[128];
 
-    snprintf(field_key, sizeof(field_key),"meter_*_*_%s_details",meter_sn);
+    snprintf(field_key, sizeof(field_key), "meter_*_*_%s_details", meter_sn);
     LOG_INFO("Fetching D1 from meter_status[%s]", field_key);
-    redisReply *r = redisCommand(rc,"HSCAN meter_status 0 MATCH %s",field_key);
+    redisReply *r = redisCommand(rc, "HSCAN meter_status 0 MATCH %s", field_key);
     if (!r || r->type != REDIS_REPLY_ARRAY || r->elements != 2)
     {
         LOG_ERROR("meter_status entry missing for %s", field_key);
@@ -1090,7 +1089,7 @@ void json_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
     char *json_str = NULL;
     for (size_t i = 0; i < data->elements; i += 2)
     {
-        char *key   = data->element[i]->str;
+        char *key = data->element[i]->str;
         char *value = data->element[i + 1]->str;
         if (strstr(key, meter_sn))
         {
@@ -1112,27 +1111,27 @@ void json_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
         LOG_ERROR("JSON Parse failed");
         return;
     }
-    const char *serial_number       = cJSON_GetObjectItem(j,"serial_number")->valuestring;
-    const char *pt_ratio            = cJSON_GetObjectItem(j,"PT_ratio")->valuestring;
-    const char *ct_ratio            = cJSON_GetObjectItem(j,"CT_ratio")->valuestring;
-    const char *meter_type          = cJSON_GetObjectItem(j,"meter_type")->valuestring;
-    const char *firmware_version    = cJSON_GetObjectItem(j,"firmware_version")->valuestring;
-    const char *manufacturer        = cJSON_GetObjectItem(j,"manufacturer")->valuestring;
-    const char *meter_category      = cJSON_GetObjectItem(j,"meter_category")->valuestring;
-    const char *curr_rating         = cJSON_GetObjectItem(j,"current_rating")->valuestring;
-    const char *year_of_manuf       = cJSON_GetObjectItem(j,"year_of_manufacture")->valuestring;
-    const char *ipv4_address        = cJSON_GetObjectItem(j,"ipv4_address")->valuestring;
-    const char *hdlc_device_address = cJSON_GetObjectItem(j,"hdlc_device_address")->valuestring;
-    const char *tranfmr_volt        = cJSON_GetObjectItem(j,"transfrmr_volt")->valuestring;
-    const char *extra_obis_1        = cJSON_GetObjectItem(j,"extra_obis_1")->valuestring;
-    const char *extra_obis_2        = cJSON_GetObjectItem(j,"extra_obis_2")->valuestring;
-    const char *extra_obis_3        = cJSON_GetObjectItem(j,"extra_obis_3")->valuestring;
+    const char *serial_number = cJSON_GetObjectItem(j, "serial_number")->valuestring;
+    const char *pt_ratio = cJSON_GetObjectItem(j, "PT_ratio")->valuestring;
+    const char *ct_ratio = cJSON_GetObjectItem(j, "CT_ratio")->valuestring;
+    const char *meter_type = cJSON_GetObjectItem(j, "meter_type")->valuestring;
+    const char *firmware_version = cJSON_GetObjectItem(j, "firmware_version")->valuestring;
+    const char *manufacturer = cJSON_GetObjectItem(j, "manufacturer")->valuestring;
+    const char *meter_category = cJSON_GetObjectItem(j, "meter_category")->valuestring;
+    const char *curr_rating = cJSON_GetObjectItem(j, "current_rating")->valuestring;
+    const char *year_of_manuf = cJSON_GetObjectItem(j, "year_of_manufacture")->valuestring;
+    const char *ipv4_address = cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
+    const char *hdlc_device_address = cJSON_GetObjectItem(j, "hdlc_device_address")->valuestring;
+    const char *tranfmr_volt = cJSON_GetObjectItem(j, "transfrmr_volt")->valuestring;
+    const char *extra_obis_1 = cJSON_GetObjectItem(j, "extra_obis_1")->valuestring;
+    const char *extra_obis_2 = cJSON_GetObjectItem(j, "extra_obis_2")->valuestring;
+    const char *extra_obis_3 = cJSON_GetObjectItem(j, "extra_obis_3")->valuestring;
 
     fprintf(out, "    \"NAMEPLATE_PROFILE\": [\n");
 
-    fprintf(out, "      [\"G1\",\"%s\",\"Meter_Serial_Number\",\"%s\",\"\"],\n",OBIS_METER_SERIAL, serial_number);
-    fprintf(out, "      [\"G22\",\"%s\",\"Manufacturer_Name\",\"%s\",\"\"],\n",OBIS_MANUFACTURER, manufacturer);
-    fprintf(out, "      [\"G17\",\"%s\",\"Firmware_Version\",\"%s\",\"\"],\n",  OBIS_FW_VERSION, firmware_version);
+    fprintf(out, "      [\"G1\",\"%s\",\"Meter_Serial_Number\",\"%s\",\"\"],\n", OBIS_METER_SERIAL, serial_number);
+    fprintf(out, "      [\"G22\",\"%s\",\"Manufacturer_Name\",\"%s\",\"\"],\n", OBIS_MANUFACTURER, manufacturer);
+    fprintf(out, "      [\"G17\",\"%s\",\"Firmware_Version\",\"%s\",\"\"],\n", OBIS_FW_VERSION, firmware_version);
     fprintf(out, "      [\"G15\",\"%s\",\"Meter_Type\",\"%s\",\"\"],\n",
             OBIS_METER_TYPE, meter_type);
     fprintf(out, "      [\"G8\",\"%s\",\"Internal_CT_Ratio\",\"%s\",\"\"],\n",
@@ -1221,7 +1220,7 @@ cdf_result_t generate_instantaneous_json(redisContext *ctx, const char *serial)
     char dt_str[32];
     get_date_str(date_str, sizeof(date_str));
     get_datetime_str(dt_str, sizeof(dt_str));
-    snprintf(result.filename,sizeof(result.filename),"INST_%s_%s.json",serial,date_str);
+    snprintf(result.filename, sizeof(result.filename), "INST_%s_%s.json", serial, date_str);
     FILE *fp = fopen(result.filename, "w");
 
     if (!fp)
@@ -1235,9 +1234,9 @@ cdf_result_t generate_instantaneous_json(redisContext *ctx, const char *serial)
 
     /* JSON writing functions - we'll create these next */
     json_write_header(fp);
-    json_write_general(ctx,fp,serial,dt_str);
-    json_write_d1(fp,ctx,serial);
-    json_write_d2(fp,ctx,&snapshot);
+    json_write_general(ctx, fp, serial, dt_str);
+    json_write_d1(fp, ctx, serial);
+    json_write_d2(fp, ctx, &snapshot);
     json_write_footer(fp);
 
     fflush(fp);
@@ -1273,7 +1272,7 @@ static int generate_nameplate_cdf(redisContext *ctx, const char *serial)
 
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
-        snprintf(out_path,sizeof(out_path),"%s/data/CDF_NP_%s_%s.xml",base_path, serial, date_str);
+        snprintf(out_path, sizeof(out_path), "%s/data/CDF_NP_%s_%s.xml", base_path, serial, date_str);
         // snprintf(out_path, sizeof(out_path), "%sCDF_NP_%s_%s.xml", CDF_OUTPUT_DIR, serial, date_str);
     }
     // snprintf(out_path, sizeof(out_path), "CDF_NP_%s_%s.xml", serial, date_str);
@@ -1347,9 +1346,6 @@ static int generate_nameplate_cdf(redisContext *ctx, const char *serial)
 //     fclose(out); // close output file
 //     return 0;
 // }
-
-
-
 
 // int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,const char *event_file,const char *billing_file)
 // {
@@ -1448,39 +1444,42 @@ static cJSON *load_json_file(const char *filename)
 
     if (!root)
     {
-        printf("JSON Parse Error : %s\n",cJSON_GetErrorPtr());
+        printf("JSON Parse Error : %s\n", cJSON_GetErrorPtr());
     }
 
     return root;
 }
 
-static void copy_item(cJSON *dst,cJSON *src,const char *name)
+static void copy_item(cJSON *dst, cJSON *src, const char *name)
 {
     cJSON *item = cJSON_GetObjectItem(src, name);
 
-    if(item)
+    if (item)
     {
-        cJSON_AddItemToObject(dst,name,cJSON_Duplicate(item,1));
+        cJSON_AddItemToObject(dst, name, cJSON_Duplicate(item, 1));
     }
 }
 
-
-int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,const char *event_file,const char *billing_file)
+int concatenate_files(char *outfile, const char *ls_file, const char *mn_file, const char *event_file, const char *billing_file)
 {
     cJSON *ls_root = load_json_file(ls_file);
     cJSON *mn_root = load_json_file(mn_file);
     cJSON *event_root = load_json_file(event_file);
     cJSON *bill_root = load_json_file(billing_file);
 
-    if(!ls_root ||
-       !mn_root ||
-       !event_root ||
-       !bill_root)
+    if (!ls_root ||
+        !mn_root ||
+        !event_root ||
+        !bill_root)
     {
-        if(ls_root) cJSON_Delete(ls_root);
-        if(mn_root) cJSON_Delete(mn_root);
-        if(event_root) cJSON_Delete(event_root);
-        if(bill_root) cJSON_Delete(bill_root);
+        if (ls_root)
+            cJSON_Delete(ls_root);
+        if (mn_root)
+            cJSON_Delete(mn_root);
+        if (event_root)
+            cJSON_Delete(event_root);
+        if (bill_root)
+            cJSON_Delete(bill_root);
 
         return -1;
     }
@@ -1491,19 +1490,19 @@ int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,cons
     // copy_item(out_root, ls_root, "SEQ_NUM");
     // copy_item(out_root, ls_root, "DATATYPE");
 
-    cJSON_AddStringToObject(out_root,"TYPE","CYCLIC_MESSAGE");
-    cJSON_AddStringToObject(out_root,"SEQ_NUM","0003");
-    cJSON_AddStringToObject(out_root,"DATATYPE","METER_DATA_MESSAGE");
+    cJSON_AddStringToObject(out_root, "TYPE", "CYCLIC_MESSAGE");
+    cJSON_AddStringToObject(out_root, "SEQ_NUM", "0003");
+    cJSON_AddStringToObject(out_root, "DATATYPE", "METER_DATA_MESSAGE");
     copy_item(out_root, ls_root, "NP");
     copy_item(out_root, ls_root, "DCU_DETAILS");
 
     cJSON *out_data = cJSON_CreateObject();
-    cJSON_AddItemToObject(out_root,"DATA",out_data);
-    cJSON *ls_data = cJSON_GetObjectItem(ls_root,"DATA");
-    copy_item(out_data,ls_data,"METER_DETAILS");
-    cJSON *profiles =cJSON_CreateArray();
+    cJSON_AddItemToObject(out_root, "DATA", out_data);
+    cJSON *ls_data = cJSON_GetObjectItem(ls_root, "DATA");
+    copy_item(out_data, ls_data, "METER_DETAILS");
+    cJSON *profiles = cJSON_CreateArray();
 
-    cJSON_AddItemToObject(out_data,"PROFILES",profiles);
+    cJSON_AddItemToObject(out_data, "PROFILES", profiles);
 
     cJSON *profile;
     cJSON *new_profile;
@@ -1516,7 +1515,7 @@ int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,cons
     {
         new_profile = cJSON_CreateObject();
 
-        cJSON_AddStringToObject(new_profile,"PROFILE","BLOCK_LOAD_PROFILE");
+        cJSON_AddStringToObject(new_profile, "PROFILE", "BLOCK_LOAD_PROFILE");
 
         copy_item(new_profile, profile, "DATE");
         copy_item(new_profile, profile, "BLOCK_INTERVAL");
@@ -1529,7 +1528,7 @@ int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,cons
 
         if (blocks)
         {
-            cJSON_AddItemToObject(new_profile,"BLOCKS",cJSON_Duplicate(blocks, 1));
+            cJSON_AddItemToObject(new_profile, "BLOCKS", cJSON_Duplicate(blocks, 1));
         }
 
         cJSON_AddItemToArray(profiles, new_profile);
@@ -1546,77 +1545,77 @@ int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,cons
     {
         new_profile = cJSON_CreateObject();
 
-        cJSON_AddStringToObject(new_profile,"PROFILE","DAILY_LOAD_PROFILE");
+        cJSON_AddStringToObject(new_profile, "PROFILE", "DAILY_LOAD_PROFILE");
 
         copy_item(new_profile, profile, "FIELDS");
         copy_item(new_profile, profile, "PARAMS");
 
-        cJSON *records = cJSON_GetObjectItem(profile,"RECORDS");
+        cJSON *records = cJSON_GetObjectItem(profile, "RECORDS");
 
         if (!records)
-            records = cJSON_GetObjectItem(profile,"VALUES");
+            records = cJSON_GetObjectItem(profile, "VALUES");
 
         if (records)
         {
-            cJSON_AddItemToObject(new_profile,"RECORDS",cJSON_Duplicate(records, 1));
+            cJSON_AddItemToObject(new_profile, "RECORDS", cJSON_Duplicate(records, 1));
         }
-        cJSON_AddItemToArray(profiles,new_profile);
+        cJSON_AddItemToArray(profiles, new_profile);
     }
 
     /*************** EVENT PROFILE ****************/
 
-    cJSON *event_data = cJSON_GetObjectItem(event_root,"DATA");
+    cJSON *event_data = cJSON_GetObjectItem(event_root, "DATA");
 
-    profile = cJSON_GetObjectItem(event_data,"EVENT_PROFILE");
+    profile = cJSON_GetObjectItem(event_data, "EVENT_PROFILE");
 
     if (profile)
     {
         new_profile = cJSON_CreateObject();
 
-        cJSON_AddStringToObject(new_profile,"PROFILE","EVENT_PROFILE");
+        cJSON_AddStringToObject(new_profile, "PROFILE", "EVENT_PROFILE");
 
         copy_item(new_profile, profile, "FIELDS");
         copy_item(new_profile, profile, "PARAMS");
 
-        cJSON *records = cJSON_GetObjectItem(profile,"RECORDS");
+        cJSON *records = cJSON_GetObjectItem(profile, "RECORDS");
 
         if (!records)
-            records = cJSON_GetObjectItem(profile,"VALUES");
+            records = cJSON_GetObjectItem(profile, "VALUES");
 
         if (records)
         {
-            cJSON_AddItemToObject(new_profile,"RECORDS",cJSON_Duplicate(records, 1));
+            cJSON_AddItemToObject(new_profile, "RECORDS", cJSON_Duplicate(records, 1));
         }
 
-        cJSON_AddItemToArray(profiles,new_profile);
+        cJSON_AddItemToArray(profiles, new_profile);
     }
 
     /*************** BILLING PROFILE ****************/
 
-    cJSON *bill_data = cJSON_GetObjectItem(bill_root,"DATA");
+    cJSON *bill_data = cJSON_GetObjectItem(bill_root, "DATA");
 
-    profile = cJSON_GetObjectItem(bill_data,"BILLING_PROFILE");
+    profile = cJSON_GetObjectItem(bill_data, "BILLING_PROFILE");
 
     if (profile)
     {
         new_profile = cJSON_CreateObject();
 
-        cJSON_AddStringToObject(new_profile,"PROFILE","BILLING_PROFILE");
+        cJSON_AddStringToObject(new_profile, "PROFILE", "BILLING_PROFILE");
 
         copy_item(new_profile, profile, "FIELDS");
         copy_item(new_profile, profile, "PARAMS");
 
-        cJSON *records = cJSON_GetObjectItem(profile,"RECORDS");
+        cJSON *records = cJSON_GetObjectItem(profile, "RECORDS");
 
         if (!records)
-            records = cJSON_GetObjectItem(profile,"VALUES");
+            records = cJSON_GetObjectItem(profile, "VALUES");
 
         if (records)
         {
-            cJSON_AddItemToObject(new_profile,"RECORDS",cJSON_Duplicate(records, 1));
+            cJSON_AddItemToObject(new_profile, "RECORDS", cJSON_Duplicate(records, 1));
         }
 
-        cJSON_AddItemToArray(profiles,new_profile);
+        cJSON_AddItemToArray(profiles, new_profile);
     }
 
     char *json = cJSON_Print(out_root);
@@ -1652,7 +1651,6 @@ int concatenate_files(char *outfile,const char *ls_file,const char *mn_file,cons
 
     return 0;
 }
-
 
 // int generate_zip_file(const char *zip_file_name)
 // {
@@ -1954,10 +1952,10 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
         snprintf(output_file_name,
                  sizeof(output_file_name),
                  "%s/data/%s_%s",
-                 base_path,  date, serial);
+                 base_path, date, serial);
 
-    // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
-        }
+        // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+    }
     /* Concatenate */
     if (concatenate_files(output_file_name,
                           ls_file_name,
@@ -2061,12 +2059,13 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
 
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
-        snprintf(output_file_name,sizeof(output_file_name),"%s/data/%s_%s",base_path,  date, serial);
+        snprintf(output_file_name, sizeof(output_file_name), "%s/data/%s_%s", base_path, date, serial);
 
-    // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+        // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
     }
     /* Concatenate */
-    if (concatenate_files(output_file_name,ls_file_name,mn_file_name,event_file_name,billing_file_name) != 0);
+    if (concatenate_files(output_file_name, ls_file_name, mn_file_name, event_file_name, billing_file_name) != 0)
+        ;
     // return result; //rithika commented 28/04/2026
 
     // rithika 18Apr2026
@@ -2121,10 +2120,56 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
     fclose(fp);
     result.status = 0;
     result.filesize = json_size;
-    strncpy(result.filename, output_file_name,sizeof(result.filename) - 1);
-    result.filename[sizeof(result.filename)-1] = '\0';
-    printf("status=%d size=%ld name=%s\n",result.status,result.filesize,result.filename);
+    strncpy(result.filename, output_file_name, sizeof(result.filename) - 1);
+    result.filename[sizeof(result.filename) - 1] = '\0';
+    printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
 
     return result;
+}
 
+cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const char *date)
+{
+    cdf_result_t result;
+    result.status = -1;
+    result.filesize = 0;
+    result.filename[0] = '\0';
+
+    char ls_file_name[128];
+    char mn_file_name[128];
+    char billing_file_name[128];
+    char event_file_name[128];
+
+    int rc1 = generate_load_profile_json(ctx, serial, date, ls_file_name);
+    if (rc1 != 0)
+    {
+        // return result;  //rithika commented 28/04/2026
+    }
+
+    char output_file_name[64];
+    char base_path[256];
+
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(output_file_name, sizeof(output_file_name), "%s/data/%s_%s", base_path, date, serial);
+
+        // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+    }
+
+    FILE *fp = fopen(output_file_name, "rb");
+    if (!fp)
+    {
+        LOG_ERROR("Unable to open %s", output_file_name);
+        return result;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long json_size = ftell(fp);
+    fclose(fp);
+    result.status = 0;
+    result.filesize = json_size;
+    strncpy(result.filename, output_file_name, sizeof(result.filename) - 1);
+    result.filename[sizeof(result.filename) - 1] = '\0';
+    printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
+
+    return result;
 }
