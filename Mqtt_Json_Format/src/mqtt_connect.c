@@ -770,6 +770,13 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
                                    &msg,
                                    &opts);
     }
+    // Gokul adding the acknowledgement publish topic which is hardcoded --> 01/08/2026 
+    else if (topic_type == CMD_ACK_TOPIC)
+    {
+        memset(pub_topic, 0 , sizeof(pub_topic));
+        snprintf(pub_topic, sizeof(pub_topic), "%s/%s", PUB_ACK_TOPIC, dcu_ser_num);
+        rc = MQTTAsync_sendMessage(mqtt_cfg->client, pub_topic, &msg, &opts);
+    }
     else
     {
         memset(pub_topic, 0, sizeof(pub_topic));
@@ -792,7 +799,11 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
     }
     else if (topic_type == HEALTH_DATA_TOPIC)
     {
-        LOG_INFO("[HEALTH CHECK Message] Transfer completed");
+        LOG_INFO("[HEALTH CHECK Message] Transfer Completed.");
+    }
+    else if(topic_type == PUB_ACK_TOPIC)
+    {
+        LOG_INFO("[ACKNOWLEDGEMENT Message] Transfer Completed.");
     }
     else
     {
@@ -1706,18 +1717,21 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         /* Validate DCU */
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
         printf("Welcome to Gokul Magical Showroom!!!\n");
+        /* Send ACK immediately */
+        // msg_size = success_resp_msg(cmd, output_msg);
+        msg_size = ack_msg_reply(3001, output_msg);
+        printf("msg_size = %d\n", msg_size);
+        printf("strlen(output_msg) = %zu\n", strlen(output_msg));
+        printf("output_msg = [%s]\n", output_msg);
+        mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+
         if (strcmp(cmd.args[0], dcu_sn) != 0)
         {
             unknown_req_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
             return;
         }
-        /* Send ACK immediately */
-        msg_size = success_resp_msg(cmd, output_msg);
-        printf("msg_size = %d\n", msg_size);
-        printf("strlen(output_msg) = %zu\n", strlen(output_msg));
-        printf("output_msg = [%s]\n", output_msg);
-        mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        
         char *json = modbus_cmd_export_json(ctx, &cmd);
         if (json)
         {
@@ -1733,22 +1747,26 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         }
         return 0;
     }
+
     else if (strcmp(cmd.type, "get_cfg") == 0)
     {
         /* Validate DCU */
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
+        /* Send ACK */
+        // msg_size = success_resp_msg(cmd, output_msg);
+        msg_size = ack_msg_reply(2102, output_msg);
+        printf("After ack msg building..\n");
+        mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        printf("After sending ack message...\n");
+
         if (strcmp(cmd.args[0], dcu_sn) != 0)
         {
             msg_size = unknown_req_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
             return;
         }
-        /* Send ACK */
-        // msg_size = success_resp_msg(cmd, output_msg);
-        msg_size = ack_msg_reply(2004, output_msg);
-        printf("After ack msg building..\n");
-        mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
-        printf("After sending ack message...\n");
+        
         /* Export requested configuration */
         char *json = get_cfg_export_json(ctx, &cmd);
         printf("After exporting cfg messages...\n");
@@ -1765,9 +1783,14 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         }
         return 0;
     }
+
     else if(strcmp(cmd.type, "set_cfg") == 0)
     {
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
+        msg_size = ack_msg_reply(2004, output_msg);
+        mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+
         if(strcmp(cmd.args[0], dcu_sn) != 0)
         {
             msg_size = unknown_req_resp_msg(cmd, output_msg);
@@ -1775,8 +1798,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             return 0;
         }
 
-        msg_size = ack_msg_reply(2102, output_msg);
-        mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+       
         if (set_cfg_export_json(ctx, &cmd) == 0)
         {
             LOG_INFO("Configuration updated successfully");
