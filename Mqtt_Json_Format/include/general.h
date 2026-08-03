@@ -131,6 +131,8 @@
 #define MODBUS_DATA_TOPIC       3
 #define HEALTH_DATA_TOPIC       4
 #define CMD_RESP_TOPIC          5
+#define CMD_ACK_TOPIC           6
+#define PUB_ACK_TOPIC           "cms/mqtt/dcu/ack"
 /* ================= Timing Parameters ================= */
 
 #define HEALTH_CHECK_INTERVAL   30    /* seconds */
