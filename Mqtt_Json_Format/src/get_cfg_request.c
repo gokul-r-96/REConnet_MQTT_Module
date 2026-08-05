@@ -132,19 +132,21 @@ char *export_mqtt_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
     jbuf_append(&jb, "{");
     /* Header */
     jbuf_append(&jb, "\"TYPE\":\"command_reply\",");
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"MQTT_BROKER\",");
-
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"MQTT_BROKERS\":[");
 
     int total = 0;
@@ -278,7 +280,7 @@ char *export_modem_cfg(redisContext *ctx, cmd_request_t *cmd)
 
     if (jbuf_init(&jb) < 0)
         return NULL;
-
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
     /* Header */
     jbuf_append(&jb, "{");
 
@@ -286,13 +288,15 @@ char *export_modem_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
-
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"MODEM\",");
+    /* DATA */
+    jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
     jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
     jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
-    /* DATA */
-    jbuf_append(&jb, "\"DATA\":{");
+
 
     export_modem_data(&jb, ctx);
 
@@ -432,6 +436,8 @@ char *export_ipsec_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_t jb;
     if (jbuf_init(&jb) < 0)
         return NULL;
+    
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
     jbuf_append(&jb, "{");
     jbuf_append(&jb,
                 "\"TYPE\":\"command_reply\",");
@@ -439,11 +445,13 @@ char *export_ipsec_cfg(redisContext *ctx, cmd_request_t *cmd)
                 "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb,
                 "\"DATA_TYPE\":\"IPSEC\",");
+    jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
     jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
     jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
-    jbuf_append(&jb, "\"DATA\":{");
     jbuf_append(&jb, "\"IPSEC_TUNNELS\":[");
     int total = 0;
     for (int i = 0; i < 2; i++)
@@ -483,6 +491,8 @@ char *export_iec104_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
     jbuf_append(&jb, "{");
 
     /* Header */
@@ -490,12 +500,14 @@ char *export_iec104_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"IEC104\",");
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"IEC104\":{");
 
 #define ADD_STR(redis_field, json_field)                        \
@@ -612,6 +624,8 @@ char *export_iec101_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
     jbuf_append(&jb, "{");
 
     /* Header */
@@ -619,12 +633,14 @@ char *export_iec101_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"IEC101\",");
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"IEC101\":{");
 
 #define ADD_STR(redis_field, json_field)                           \
@@ -746,6 +762,8 @@ char *export_ftp_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
     jbuf_append(&jb, "{");
 
     /* Header */
@@ -753,12 +771,13 @@ char *export_ftp_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"FTP\",");
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
-
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"FTP\":{");
 
 #ifdef MQTT_JSON_ALL_STRING
@@ -874,6 +893,8 @@ char *export_ntp_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
     jbuf_append(&jb, "{");
 
     /* Header */
@@ -881,12 +902,14 @@ char *export_ntp_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"NTP\",");
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"NTP\":{");
 
 #define ADD_STR(redis_field, json_field)                             \
@@ -1048,6 +1071,8 @@ char *export_modtcp_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
     jbuf_append(&jb, "{");
 
     /* Header */
@@ -1055,12 +1080,13 @@ char *export_modtcp_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"MODBUS_TCP\",");
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
-
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"MODBUS_TCP\":[");
 
     int total = 0;
@@ -1265,6 +1291,7 @@ static int export_one_modrtu_cfg(jbuf_t *jb, redisContext *ctx, int port, int de
     if (!rhash_exists(ctx, hash))
         return 0;
 
+
     jbuf_append(jb, "{");
 
 #define ADD_STR(redis_field, json_field)                              \
@@ -1360,6 +1387,8 @@ char *export_modrtu_cfg(redisContext *ctx, cmd_request_t *cmd)
     if (jbuf_init(&jb) < 0)
         return NULL;
 
+    char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+    
     jbuf_append(&jb, "{");
 
     /* Header */
@@ -1367,12 +1396,14 @@ char *export_modrtu_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"MODBUS_RTU\",");
 
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
+    jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"MODBUS_RTU\":[");
     printf("Upto Data...\n");
     int total = 0;
@@ -1454,14 +1485,13 @@ char *export_dlms_serial_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, ",");
     jbuf_append(&jb, "\"DATA_TYPE\":\"DLMS_SERIAL\",");
 
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
-
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
 
     char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
     jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     jbuf_append(&jb, "\"DLMS_SERIAL\":{");
 
@@ -1574,16 +1604,16 @@ char *export_dlms_ethernet_cfg(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb, "\"SEQ_NUM\":");
     jbuf_append_escaped(&jb, cmd->transaction);
     jbuf_append(&jb, ",");
+    jbuf_append(&jb, "\"COMMAND_TYPE\":\"%s\",", cmd->type);
     jbuf_append(&jb, "\"DATA_TYPE\":\"DLMS_ETHERNET\",");
 
-    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
-    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
 
     /* DATA */
     jbuf_append(&jb, "\"DATA\":{");
     char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
     jbuf_append(&jb, "\"DCU\":\"%s\",", dcu_sn);
-
+    jbuf_append(&jb, "\"CMD_STATUS\":\"0\",");
+    jbuf_append(&jb, "\"CMD_MESSAGE\":\"SUCCESS\",");
     jbuf_append(&jb, "\"DLMS_ETHERNET\":{");
 
 #define ADD_STR(hash, redis_field, json_field)              \
@@ -1666,6 +1696,7 @@ char *export_dlms_ethernet_cfg(redisContext *ctx, cmd_request_t *cmd)
     return jb.data;
 }
 
+// The below function will describe the config of which data type should be called --> 05/08/2026
 char *get_cfg_export_json(redisContext *ctx, cmd_request_t *cmd)
 {
     if (!ctx || !cmd)
@@ -1685,9 +1716,6 @@ char *get_cfg_export_json(redisContext *ctx, cmd_request_t *cmd)
 
     if (!strcmp(cmd->data_type_req, "MODBUS_RTU"))
         return export_modrtu_cfg(ctx, cmd);
-
-    // if (!strcmp(cmd->data_type_req, "DLMS"))
-    //     return export_dlms_cfg(ctx, cmd);
 
     if (!strcmp(cmd->data_type_req, "IEC104"))
         return export_iec104_cfg(ctx, cmd);

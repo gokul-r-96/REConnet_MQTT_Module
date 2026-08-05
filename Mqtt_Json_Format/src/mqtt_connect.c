@@ -1183,16 +1183,38 @@ int parse_cmd_request(const char *json_str, cmd_request_t *cmd)
             sizeof(cmd->transaction) - 1);
 
     /* DATA_TYPE */
+    // Reset command type has no key named "DATA_TYPE" so it should be handled separately --> 04/08/2026...Gokul !!
     item = cJSON_GetObjectItemCaseSensitive(root, "DATA_TYPE");
-    if (!cJSON_IsString(item) || item->valuestring == NULL)
+    if (!strcmp(cmd->type, "Reset"))
     {
-        LOG_ERROR("parse_cmd_request: DATA_TYPE missing");
-        cJSON_Delete(root);
-        return -1;
+        if (cJSON_IsString(item) && item->valuestring)
+        {
+            strncpy(cmd->data_type_req,
+                    item->valuestring,
+                    sizeof(cmd->data_type_req) - 1);
+
+            cmd->data_type_req[sizeof(cmd->data_type_req) - 1] = '\0';
+        }
+        else
+        {
+            cmd->data_type_req[0] = '\0';
+        }
     }
-    strncpy(cmd->data_type_req,
-            item->valuestring,
-            sizeof(cmd->data_type_req) - 1);
+    else
+    {
+        if (!cJSON_IsString(item) || item->valuestring == NULL)
+        {
+            LOG_ERROR("parse_cmd_request: DATA_TYPE missing");
+            cJSON_Delete(root);
+            return -1;
+        }
+
+        strncpy(cmd->data_type_req,
+                item->valuestring,
+                sizeof(cmd->data_type_req) - 1);
+
+        cmd->data_type_req[sizeof(cmd->data_type_req) - 1] = '\0';
+    }
 
     /* DATA object */
     data = cJSON_GetObjectItemCaseSensitive(root, "DATA");
@@ -1780,11 +1802,56 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         }
         return -1;
     }
+    // To send acknowledgement immediately before  entering into the original process of extraction --> 04/08/2026...Gokul!!!
+    else
+    {
+        if (!strcmp(cmd.type, "GetDay"))
+        {
+            msg_size = ack_msg_reply(1001, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if(!strcmp(cmd.type, "FetchDay"))
+        {
+            msg_size = ack_msg_reply(1002, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if(!strcmp(cmd.type, "ReadModbus"))
+        {
+            msg_size = ack_msg_reply(3001, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if(!strcmp(cmd.type, "get_cfg"))
+        {
+            msg_size = ack_msg_reply(2102, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if(!strcmp(cmd.type, "set_cfg"))
+        {
+            msg_size = ack_msg_reply(2004, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if(!strcmp(cmd.type, "Reset"))
+        {
+            msg_size = ack_msg_reply(1003, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+    }
+
 
     // printf("\033[0;32m ouput msg : %s\n size %d \033[0m\n", output_msg, msg_size);
 
-    if (strcmp(cmd.type, "GetDay") == 0 && cmd.args[0][0] != '\0')
+    // Actual Processing of messages starts here
+    if (!strcmp(cmd.type, "GetDay")  && cmd.args[0][0] != '\0')
     {
+        /*Serial Number check for the incoming messages*/
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+        if (strcmp(cmd.args[0], dcu_sn) != 0)
+        {
+            unknown_ser_num(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+            return;
+        }
+
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
         char today_date[32];
@@ -1807,30 +1874,45 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             msg_size = success_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
+        else
+        {
+            msg_size = failure_resp_msg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
     }
 
-    else if (strcmp(cmd.type, "FetchDay") == 0 && cmd.args[0][0] != '\0')
+    else if (!strcmp(cmd.type, "FetchDay")  && cmd.args[0][0] != '\0')
     {
+        /*Serial Number check for the incoming messages*/
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+        if (strcmp(cmd.args[0], dcu_sn) != 0)
+        {
+            unknown_ser_num(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+            return;
+        }
+        
         check_redis_resp = 1;
         generate_redis_list(cmd);
     }
 
-    else if (strcmp(cmd.type, "ReadModbus") == 0)
+    else if (!strcmp(cmd.type, "ReadModbus"))
     {
         /* Validate DCU */
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
         printf("Welcome to Gokul Magical Showroom!!!\n");
         /* Send ACK immediately */
         // msg_size = success_resp_msg(cmd, output_msg);
-        msg_size = ack_msg_reply(3001, output_msg);
-        printf("msg_size = %d\n", msg_size);
-        printf("strlen(output_msg) = %zu\n", strlen(output_msg));
-        printf("output_msg = [%s]\n", output_msg);
-        mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+
+        // msg_size = ack_msg_reply(3001, output_msg);
+        // printf("msg_size = %d\n", msg_size);
+        // printf("strlen(output_msg) = %zu\n", strlen(output_msg));
+        // printf("output_msg = [%s]\n", output_msg);
+        // mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
 
         if (strcmp(cmd.args[0], dcu_sn) != 0)
         {
-            unknown_req_resp_msg(cmd, output_msg);
+            unknown_ser_num(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
             return;
         }
@@ -1842,6 +1924,12 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             mqtt_send_msg(conn, json, strlen(json), CMD_RESP_TOPIC);
             free(json);
         }
+        else
+        {
+            LOG_INFO("Modbus JSON Buffer is empty so sending failed message");
+            msg_size = failure_resp_msg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
         if (cmd.root)
         {
             cJSON_Delete(cmd.root);
@@ -1851,21 +1939,21 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         return 0;
     }
 
-    else if (strcmp(cmd.type, "get_cfg") == 0)
+    else if (!strcmp(cmd.type, "get_cfg"))
     {
         /* Validate DCU */
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
 
         /* Send ACK */
         // msg_size = success_resp_msg(cmd, output_msg);
-        msg_size = ack_msg_reply(2102, output_msg);
-        printf("After ack msg building..\n");
-        mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
-        printf("After sending ack message...\n");
+        // msg_size = ack_msg_reply(2102, output_msg);
+        // printf("After ack msg building..\n");
+        // mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        // printf("After sending ack message...\n");
 
         if (strcmp(cmd.args[0], dcu_sn) != 0)
         {
-            msg_size = unknown_req_resp_msg(cmd, output_msg);
+            msg_size = unknown_ser_num(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
             return;
         }
@@ -1875,8 +1963,15 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         printf("After exporting cfg messages...\n");
         if (json)
         {
+            LOG_INFO("JSON Message is inside the json buffer,so sending success message\n");
             mqtt_send_msg(conn, json, strlen(json), CMD_RESP_TOPIC);
             free(json);
+        }
+        else
+        {
+            LOG_INFO("JSON buffer is empty ,so sending failed message\n");
+            msg_size = failure_resp_msg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
         if (cmd.root)
         {
@@ -1887,12 +1982,14 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         return 0;
     }
 
-    else if (strcmp(cmd.type, "set_cfg") == 0)
+    else if (!strcmp(cmd.type, "set_cfg"))
     {
+        // msg_size = ack_msg_reply(2004, output_msg);
+        // mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
         if(strcmp(cmd.args[0], dcu_sn) != 0)
         {
-            msg_size = unknown_req_resp_msg(cmd, output_msg);
+            msg_size = unknown_ser_num(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
             return 0;
         }
@@ -1907,7 +2004,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         else
         {
             LOG_ERROR("Configuration update failed");
-            msg_size = failure_resp_msg_set_cfg(cmd, output_msg);
+            msg_size = failure_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
         if (cmd.root)
@@ -1916,6 +2013,28 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             cmd.root = NULL;
             cmd.data = NULL;
         }
+        return 0;
+    }
+
+    else if(!strcmp(cmd.type,"Reset"))
+    {
+        printf("Entered into reset!!!\n");
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+        if(strcmp(cmd.args[0], dcu_sn) != 0)
+        {
+            msg_size = unknown_ser_num(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+            return 0;
+        }
+        printf("Before sending success message...\n");
+        //Send MQTT success message before the device reboots 
+        msg_size = success_resp_msg(cmd, output_msg);
+        mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        sleep(1);
+
+        sync();
+        system("reboot");
+
         return 0;
     }
 }

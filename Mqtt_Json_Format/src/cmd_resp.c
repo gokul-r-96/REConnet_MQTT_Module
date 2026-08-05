@@ -206,7 +206,7 @@ int success_resp_msg_set_cfg(cmd_request_t cmd, char *out_buf)
     return build_cmd_reply(cmd, 0, "SUCCESS", out_buf);
 }
 
-int failure_resp_msg_set_cfg(cmd_request_t cmd, char *out_buf)
+int failure_resp_msg(cmd_request_t cmd, char *out_buf)
 {
     return build_cmd_reply(cmd, 10, "FAILED", out_buf);
 }
@@ -223,7 +223,7 @@ int unknown_req_resp_msg(cmd_request_t cmd, char *out_buf)
 
 int unknown_ser_num(cmd_request_t cmd, char *out_buf)
 {
-    return build_cmd_reply(cmd, 5, "Serial Number Mismatch", out_buf);
+    return build_cmd_reply(cmd, 5, "Invalid DCU Serial Number", out_buf);
 }
 
 int ack_msg_reply(int seq_num, char *out_buf)

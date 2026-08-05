@@ -9,9 +9,11 @@
 int set_mqtt_cfg(redisContext *ctx, cJSON *data, int primary)
 {
     printf("Entering into mqtt config setting!!!\n");
+
     char *str = cJSON_Print(data);
     printf("DATA JSON = %s\n", str);
     free(str);
+
     char hash[32] = "";
     redisReply *reply;
     cJSON *item;
@@ -24,7 +26,6 @@ int set_mqtt_cfg(redisContext *ctx, cJSON *data, int primary)
      * primary = 1 -> mqtt_0_cfg or mqtt_1_cfg having primary=1
      * primary = 0 -> mqtt_0_cfg or mqtt_1_cfg having primary=0
      *------------------------------------------------------*/
-
     for (int i = 0; i < 2; i++)
     {
         char tmp[32];
@@ -54,23 +55,33 @@ int set_mqtt_cfg(redisContext *ctx, cJSON *data, int primary)
         }                                                             \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                            \
-    do                                                             \
-    {                                                              \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);   \
-        if (cJSON_IsNumber(item))                                  \
-        {                                                          \
-            reply = redisCommand(ctx,                              \
-                                 "HSET %s %s %d",                  \
-                                 hash, REDIS_KEY, item->valueint); \
-            if (reply)                                             \
-                freeReplyObject(reply);                            \
-        }                                                          \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                                \
+    do                                                                 \
+    {                                                                  \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);       \
+                                                                       \
+        if (cJSON_IsNumber(item))                                      \
+        {                                                              \
+            reply = redisCommand(ctx,                                  \
+                                 "HSET %s %s %d",                      \
+                                 hash, REDIS_KEY, item->valueint);     \
+            if (reply)                                                 \
+                freeReplyObject(reply);                                \
+        }                                                              \
+        else if (cJSON_IsString(item) && item->valuestring)            \
+        {                                                              \
+            reply = redisCommand(ctx,                                  \
+                                 "HSET %s %s %d",                      \
+                                 hash, REDIS_KEY,                      \
+                                 atoi(item->valuestring));             \
+            if (reply)                                                 \
+                freeReplyObject(reply);                                \
+        }                                                              \
     } while (0)
 
     /* Broker parameters */
     UPDATE_STR("BROKER_IP", "broker_ip_url");
-    UPDATE_STR("BROKER_PORT", "broker_port");
+    UPDATE_INT("BROKER_PORT", "broker_port");
     UPDATE_STR("CLIENT_ID", "client_id");
     UPDATE_STR("USERNAME", "username");
     UPDATE_STR("PASSWORD", "password");
@@ -83,20 +94,19 @@ int set_mqtt_cfg(redisContext *ctx, cJSON *data, int primary)
 
 #undef UPDATE_STR
 #undef UPDATE_INT
+
+    /* Restart MQTT process */
     reply = redisCommand(ctx, "SADD proc_restart re_mqtt_proc");
     if (reply)
     {
         if (reply->type == REDIS_REPLY_INTEGER)
         {
             if (reply->integer == 1)
-            {
                 LOG_INFO("Restart requested for re_mqtt_proc");
-            }
             else
-            {
                 LOG_INFO("Restart already pending for re_mqtt_proc");
-            }
         }
+
         freeReplyObject(reply);
     }
 
@@ -109,15 +119,26 @@ int set_modem_cfg(redisContext *ctx, cJSON *data)
     char field[32];
     redisReply *reply;
     cJSON *item;
+    int sim = 0;
 
     if (!ctx || !data)
         return -1;
+
     /* SIM_SLOT is mandatory */
     item = cJSON_GetObjectItemCaseSensitive(data, "SIM_SLOT");
 
-    if (!cJSON_IsNumber(item))
+    if (cJSON_IsNumber(item))
+    {
+        sim = item->valueint;
+    }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        sim = atoi(item->valuestring);
+    }
+    else
+    {
         return -1;
-    int sim = item->valueint;
+    }
 
     if (sim != 1 && sim != 2)
         return -1;
@@ -171,6 +192,7 @@ int set_ipsec_cfg(redisContext *ctx, cJSON *data)
     char hash[32];
     redisReply *reply;
     cJSON *item;
+    int tunnel = 0;
 
     if (!ctx || !data)
         return -1;
@@ -178,46 +200,70 @@ int set_ipsec_cfg(redisContext *ctx, cJSON *data)
     /* Tunnel number is mandatory */
     item = cJSON_GetObjectItemCaseSensitive(data, "IPSEC_TUNNEL");
 
-    if (!cJSON_IsNumber(item))
+    if (cJSON_IsNumber(item))
+    {
+        tunnel = item->valueint;
+    }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        tunnel = atoi(item->valuestring);
+    }
+    else
+    {
         return -1;
-
-    int tunnel = item->valueint;
+    }
 
     if (tunnel != 1 && tunnel != 2)
         return -1;
 
     sprintf(hash, "ipsec_%d_cfg", tunnel - 1);
 
-#define UPDATE_STR(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsString(item) && item->valuestring)           \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET %s %s %s",                \
-                                 hash,                           \
-                                 REDIS_KEY,                      \
-                                 item->valuestring);             \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_STR(JSON_KEY, REDIS_KEY)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+        if (cJSON_IsString(item) && item->valuestring)               \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET %s %s %s",                    \
+                                 hash,                               \
+                                 REDIS_KEY,                          \
+                                 item->valuestring);                 \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsNumber(item))                                \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET %s %s %d",                \
-                                 hash,                           \
-                                 REDIS_KEY,                      \
-                                 item->valueint);                \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                               \
+    do                                                                \
+    {                                                                 \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);      \
+                                                                      \
+        if (cJSON_IsNumber(item))                                     \
+        {                                                             \
+            reply = redisCommand(ctx,                                 \
+                                 "HSET %s %s %d",                     \
+                                 hash, REDIS_KEY, item->valueint);    \
+            if (reply)                                                \
+                freeReplyObject(reply);                               \
+        }                                                             \
+        else if (cJSON_IsString(item) && item->valuestring)           \
+        {                                                             \
+            int value;                                                \
+                                                                      \
+            if (!strcasecmp(item->valuestring, "YES"))                \
+                value = 1;                                            \
+            else if (!strcasecmp(item->valuestring, "NO"))            \
+                value = 0;                                            \
+            else                                                      \
+                value = atoi(item->valuestring);                      \
+                                                                      \
+            reply = redisCommand(ctx,                                 \
+                                 "HSET %s %s %d",                     \
+                                 hash, REDIS_KEY, value);             \
+            if (reply)                                                \
+                freeReplyObject(reply);                               \
+        }                                                             \
     } while (0)
 
     /* Parameters supported */
@@ -266,13 +312,9 @@ int set_ipsec_cfg(redisContext *ctx, cJSON *data)
         if (reply->type == REDIS_REPLY_INTEGER)
         {
             if (reply->integer == 1)
-            {
                 LOG_INFO("Restart requested for ipsec_monitor.sh");
-            }
             else
-            {
                 LOG_INFO("Restart already pending for ipsec_monitor.sh");
-            }
         }
         freeReplyObject(reply);
     }
@@ -280,54 +322,86 @@ int set_ipsec_cfg(redisContext *ctx, cJSON *data)
     return 0;
 }
 
+
 int set_ntp_cfg(redisContext *ctx, cJSON *data)
 {
     redisReply *reply;
     cJSON *item;
     char field[64];
+    int server = 0;
 
     if (!ctx || !data)
         return -1;
 
+    /* NTP_SERVER is mandatory */
     item = cJSON_GetObjectItemCaseSensitive(data, "NTP_SERVER");
-    if (!cJSON_IsNumber(item))
-        return -1;
 
-    int server = item->valueint;
+    if (cJSON_IsNumber(item))
+    {
+        server = item->valueint;
+    }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        server = atoi(item->valuestring);
+    }
+    else
+    {
+        return -1;
+    }
 
     if (server != 1 && server != 2)
         return -1;
 
-#define UPDATE_STR(JSON_KEY, REDIS_FMT)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsString(item) && item->valuestring)           \
-        {                                                        \
-            sprintf(field, REDIS_FMT, server);                   \
-            reply = redisCommand(ctx,                            \
-                                 "HSET ntp_cfg %s %s",           \
-                                 field,                          \
-                                 item->valuestring);             \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_STR(JSON_KEY, REDIS_FMT)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+        if (cJSON_IsString(item) && item->valuestring)               \
+        {                                                            \
+            sprintf(field, REDIS_FMT, server);                       \
+            reply = redisCommand(ctx,                                \
+                                 "HSET ntp_cfg %s %s",               \
+                                 field,                              \
+                                 item->valuestring);                 \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_FMT)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsNumber(item))                                \
-        {                                                        \
-            sprintf(field, REDIS_FMT, server);                   \
-            reply = redisCommand(ctx,                            \
-                                 "HSET ntp_cfg %s %d",           \
-                                 field,                          \
-                                 item->valueint);                \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_INT(JSON_KEY, REDIS_FMT)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+                                                                     \
+        if (cJSON_IsNumber(item))                                    \
+        {                                                            \
+            sprintf(field, REDIS_FMT, server);                       \
+            reply = redisCommand(ctx,                                \
+                                 "HSET ntp_cfg %s %d",               \
+                                 field,                              \
+                                 item->valueint);                    \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
+        else if (cJSON_IsString(item) && item->valuestring)          \
+        {                                                            \
+            int value;                                               \
+                                                                     \
+            if (!strcasecmp(item->valuestring, "YES"))               \
+                value = 1;                                           \
+            else if (!strcasecmp(item->valuestring, "NO"))           \
+                value = 0;                                           \
+            else                                                     \
+                value = atoi(item->valuestring);                     \
+                                                                     \
+            sprintf(field, REDIS_FMT, server);                       \
+            reply = redisCommand(ctx,                                \
+                                 "HSET ntp_cfg %s %d",               \
+                                 field,                              \
+                                 value);                             \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
     /* Per-server parameters */
@@ -338,15 +412,35 @@ int set_ntp_cfg(redisContext *ctx, cJSON *data)
     UPDATE_INT("ENABLE_NTP", "enable_ntp%d");
 
     item = cJSON_GetObjectItemCaseSensitive(data, "SYNC_INTERVAL");
-    if (cJSON_IsNumber(item))
+    if (item)
     {
-        reply = redisCommand(ctx, "HSET ntp_cfg interval %d", item->valueint);
-        if (reply)
-            freeReplyObject(reply);
+        int value;
+
+        if (cJSON_IsNumber(item))
+            value = item->valueint;
+        else if (cJSON_IsString(item) && item->valuestring)
+        {
+            if (!strcasecmp(item->valuestring, "YES"))
+                value = 1;
+            else if (!strcasecmp(item->valuestring, "NO"))
+                value = 0;
+            else
+                value = atoi(item->valuestring);
+        }
+        else
+            value = -1;
+
+        if (value >= 0)
+        {
+            reply = redisCommand(ctx,"HSET ntp_cfg interval %d",value);
+            if (reply)
+                freeReplyObject(reply);
+        }
     }
 
 #undef UPDATE_STR
 #undef UPDATE_INT
+
     reply = redisCommand(ctx, "SADD proc_restart ntp_time_sync.sh");
     if (reply)
     {
@@ -363,8 +457,11 @@ int set_ntp_cfg(redisContext *ctx, cJSON *data)
         }
         freeReplyObject(reply);
     }
+
     return 0;
 }
+
+
 
 int set_iec104_cfg(redisContext *ctx, cJSON *data)
 {
@@ -374,34 +471,53 @@ int set_iec104_cfg(redisContext *ctx, cJSON *data)
     if (!ctx || !data)
         return -1;
 
-#define UPDATE_STR(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsString(item) && item->valuestring)           \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET iec104_0_cfg %s %s",      \
-                                 REDIS_KEY,                      \
-                                 item->valuestring);             \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_STR(JSON_KEY, REDIS_KEY)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+        if (cJSON_IsString(item) && item->valuestring)               \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET iec104_0_cfg %s %s",          \
+                                 REDIS_KEY,                          \
+                                 item->valuestring);                 \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsNumber(item))                                \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET iec104_0_cfg %s %d",      \
-                                 REDIS_KEY,                      \
-                                 item->valueint);                \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+                                                                     \
+        if (cJSON_IsNumber(item))                                    \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET iec104_0_cfg %s %d",          \
+                                 REDIS_KEY,                          \
+                                 item->valueint);                    \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
+        else if (cJSON_IsString(item) && item->valuestring)          \
+        {                                                            \
+            int value;                                               \
+                                                                     \
+            if (!strcasecmp(item->valuestring, "YES"))               \
+                value = 1;                                           \
+            else if (!strcasecmp(item->valuestring, "NO"))           \
+                value = 0;                                           \
+            else                                                     \
+                value = atoi(item->valuestring);                     \
+                                                                     \
+            reply = redisCommand(ctx,                                \
+                                 "HSET iec104_0_cfg %s %d",          \
+                                 REDIS_KEY,                          \
+                                 value);                             \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
     /* Parameters from command */
@@ -456,6 +572,8 @@ int set_iec104_cfg(redisContext *ctx, cJSON *data)
     return 0;
 }
 
+
+
 int set_iec101_cfg(redisContext *ctx, cJSON *data)
 {
     redisReply *reply;
@@ -464,34 +582,53 @@ int set_iec101_cfg(redisContext *ctx, cJSON *data)
     if (!ctx || !data)
         return -1;
 
-#define UPDATE_STR(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsString(item) && item->valuestring)           \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET iec101_0_cfg %s %s",      \
-                                 REDIS_KEY,                      \
-                                 item->valuestring);             \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_STR(JSON_KEY, REDIS_KEY)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+        if (cJSON_IsString(item) && item->valuestring)               \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET iec101_0_cfg %s %s",          \
+                                 REDIS_KEY,                          \
+                                 item->valuestring);                 \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsNumber(item))                                \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET iec101_0_cfg %s %d",      \
-                                 REDIS_KEY,                      \
-                                 item->valueint);                \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+                                                                     \
+        if (cJSON_IsNumber(item))                                    \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET iec101_0_cfg %s %d",          \
+                                 REDIS_KEY,                          \
+                                 item->valueint);                    \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
+        else if (cJSON_IsString(item) && item->valuestring)          \
+        {                                                            \
+            int value;                                               \
+                                                                     \
+            if (!strcasecmp(item->valuestring, "YES"))               \
+                value = 1;                                           \
+            else if (!strcasecmp(item->valuestring, "NO"))           \
+                value = 0;                                           \
+            else                                                     \
+                value = atoi(item->valuestring);                     \
+                                                                     \
+            reply = redisCommand(ctx,                                \
+                                 "HSET iec101_0_cfg %s %d",          \
+                                 REDIS_KEY,                          \
+                                 value);                             \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
     /* Parameters from your command */
@@ -549,55 +686,87 @@ int set_iec101_cfg(redisContext *ctx, cJSON *data)
     return 0;
 }
 
+
+
 int set_ftp_cfg(redisContext *ctx, cJSON *data)
 {
     redisReply *reply;
     cJSON *item;
     char field[64];
+    int server = 0;
 
     if (!ctx || !data)
         return -1;
 
+    /* FTP_SERVER is mandatory */
     item = cJSON_GetObjectItemCaseSensitive(data, "FTP_SERVER");
 
-    if (!cJSON_IsNumber(item))
+    if (cJSON_IsNumber(item))
+    {
+        server = item->valueint;
+    }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        server = atoi(item->valuestring);
+    }
+    else
+    {
         return -1;
-
-    int server = item->valueint;
+    }
 
     if (server != 1 && server != 2)
         return -1;
 
-#define UPDATE_STR(JSON_KEY, REDIS_FMT)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsString(item) && item->valuestring)           \
-        {                                                        \
-            sprintf(field, REDIS_FMT, server);                   \
-            reply = redisCommand(ctx,                            \
-                                 "HSET ftp_cfg %s %s",           \
-                                 field,                          \
-                                 item->valuestring);             \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_STR(JSON_KEY, REDIS_FMT)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+        if (cJSON_IsString(item) && item->valuestring)               \
+        {                                                            \
+            sprintf(field, REDIS_FMT, server);                       \
+            reply = redisCommand(ctx,                                \
+                                 "HSET ftp_cfg %s %s",               \
+                                 field,                              \
+                                 item->valuestring);                 \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_FMT)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsNumber(item))                                \
-        {                                                        \
-            sprintf(field, REDIS_FMT, server);                   \
-            reply = redisCommand(ctx,                            \
-                                 "HSET ftp_cfg %s %d",           \
-                                 field,                          \
-                                 item->valueint);                \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_INT(JSON_KEY, REDIS_FMT)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+                                                                     \
+        if (cJSON_IsNumber(item))                                    \
+        {                                                            \
+            sprintf(field, REDIS_FMT, server);                       \
+            reply = redisCommand(ctx,                                \
+                                 "HSET ftp_cfg %s %d",               \
+                                 field,                              \
+                                 item->valueint);                    \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
+        else if (cJSON_IsString(item) && item->valuestring)          \
+        {                                                            \
+            int value;                                               \
+                                                                     \
+            if (!strcasecmp(item->valuestring, "YES"))               \
+                value = 1;                                           \
+            else if (!strcasecmp(item->valuestring, "NO"))           \
+                value = 0;                                           \
+            else                                                     \
+                value = atoi(item->valuestring);                     \
+                                                                     \
+            sprintf(field, REDIS_FMT, server);                       \
+            reply = redisCommand(ctx,                                \
+                                 "HSET ftp_cfg %s %d",               \
+                                 field,                              \
+                                 value);                             \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
     UPDATE_STR("IP_ADDRESS", "ip_addr_%d");
@@ -618,11 +787,20 @@ int set_ftp_cfg(redisContext *ctx, cJSON *data)
         if (reply)
             freeReplyObject(reply);
     }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        reply = redisCommand(ctx,
+                             "HSET ftp_cfg ftp_enable %d",
+                             atoi(item->valuestring));
+        if (reply)
+            freeReplyObject(reply);
+    }
 
 #undef UPDATE_STR
 #undef UPDATE_INT
 
     const char *ftp_ser_sel = (server == 1) ? "ftp_pusher_1" : "ftp_pusher_2";
+
     reply = redisCommand(ctx, "SADD proc_restart %s", ftp_ser_sel);
     if (reply)
     {
@@ -643,40 +821,63 @@ int set_ftp_cfg(redisContext *ctx, cJSON *data)
     return 0;
 }
 
+
 int set_serial_port_cfg(redisContext *ctx, cJSON *data)
 {
     redisReply *reply;
     cJSON *item;
     char hash[32];
+    int port = 0;
 
     if (!ctx || !data)
         return -1;
 
+    /* SERIAL_PORT is mandatory */
     item = cJSON_GetObjectItemCaseSensitive(data, "SERIAL_PORT");
-    if (!cJSON_IsNumber(item))
-        return -1;
 
-    int port = item->valueint;
+    if (cJSON_IsNumber(item))
+    {
+        port = item->valueint;
+    }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        port = atoi(item->valuestring);
+    }
+    else
+    {
+        return -1;
+    }
 
     if (port != 1 && port != 2)
         return -1;
 
     sprintf(hash, "serial_port_%d_cfg", port - 1);
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                          \
-    do                                                           \
-    {                                                            \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY); \
-        if (cJSON_IsNumber(item))                                \
-        {                                                        \
-            reply = redisCommand(ctx,                            \
-                                 "HSET %s %s %d",                \
-                                 hash,                           \
-                                 REDIS_KEY,                      \
-                                 item->valueint);                \
-            if (reply)                                           \
-                freeReplyObject(reply);                          \
-        }                                                        \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                              \
+    do                                                               \
+    {                                                                \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);     \
+                                                                     \
+        if (cJSON_IsNumber(item))                                    \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET %s %s %d",                    \
+                                 hash,                               \
+                                 REDIS_KEY,                          \
+                                 item->valueint);                    \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
+        else if (cJSON_IsString(item) && item->valuestring)          \
+        {                                                            \
+            reply = redisCommand(ctx,                                \
+                                 "HSET %s %s %d",                    \
+                                 hash,                               \
+                                 REDIS_KEY,                          \
+                                 atoi(item->valuestring));           \
+            if (reply)                                               \
+                freeReplyObject(reply);                              \
+        }                                                            \
     } while (0)
 
     UPDATE_INT("BAUD_RATE", "baudrate");
@@ -707,6 +908,7 @@ int set_serial_port_cfg(redisContext *ctx, cJSON *data)
 
     return 0;
 }
+
 
 int set_modtcp_cfg(redisContext *ctx, cJSON *data)
 {
@@ -761,18 +963,28 @@ int set_modtcp_cfg(redisContext *ctx, cJSON *data)
         }                                                             \
     } while (0)
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                            \
-    do                                                             \
-    {                                                              \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);   \
-        if (cJSON_IsNumber(item))                                  \
-        {                                                          \
-            reply = redisCommand(ctx,                              \
-                                 "HSET %s %s %d",                  \
-                                 hash, REDIS_KEY, item->valueint); \
-            if (reply)                                             \
-                freeReplyObject(reply);                            \
-        }                                                          \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                               \
+    do                                                                \
+    {                                                                 \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);      \
+                                                                      \
+        if (cJSON_IsNumber(item))                                     \
+        {                                                             \
+            reply = redisCommand(ctx,                                 \
+                                 "HSET %s %s %d",                     \
+                                 hash, REDIS_KEY, item->valueint);    \
+            if (reply)                                                \
+                freeReplyObject(reply);                               \
+        }                                                             \
+        else if (cJSON_IsString(item) && item->valuestring)           \
+        {                                                             \
+            reply = redisCommand(ctx,                                 \
+                                 "HSET %s %s %d",                     \
+                                 hash, REDIS_KEY,                     \
+                                 atoi(item->valuestring));            \
+            if (reply)                                                \
+                freeReplyObject(reply);                               \
+        }                                                             \
     } while (0)
 
     UPDATE_STR("IP_ADDRESS", "dev_ip");
@@ -806,6 +1018,7 @@ int set_modtcp_cfg(redisContext *ctx, cJSON *data)
     return 0;
 }
 
+
 int set_modrtu_cfg(redisContext *ctx, cJSON *data)
 {
     redisReply *reply;
@@ -813,17 +1026,26 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
     char hash[64];
     char dev_name[64];
     char meter_name[64];
-    int serial_port;
+    int serial_port = 0;
 
     if (!ctx || !data)
         return -1;
 
     /* SERIAL_PORT */
     item = cJSON_GetObjectItemCaseSensitive(data, "SERIAL_PORT");
-    if (!cJSON_IsNumber(item))
-        return -1;
 
-    serial_port = item->valueint;
+    if (cJSON_IsNumber(item))
+    {
+        serial_port = item->valueint;
+    }
+    else if (cJSON_IsString(item) && item->valuestring)
+    {
+        serial_port = atoi(item->valuestring);
+    }
+    else
+    {
+        return -1;
+    }
 
     if (serial_port != 1 && serial_port != 2)
         return -1;
@@ -857,18 +1079,29 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
     if (hash[0] == '\0')
         return -1;
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY)                            \
-    do                                                             \
-    {                                                              \
-        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);   \
-        if (cJSON_IsNumber(item))                                  \
-        {                                                          \
-            reply = redisCommand(ctx,                              \
-                                 "HSET %s %s %d",                  \
-                                 hash, REDIS_KEY, item->valueint); \
-            if (reply)                                             \
-                freeReplyObject(reply);                            \
-        }                                                          \
+#define UPDATE_INT(JSON_KEY, REDIS_KEY)                               \
+    do                                                                \
+    {                                                                 \
+        item = cJSON_GetObjectItemCaseSensitive(data, JSON_KEY);      \
+                                                                      \
+        if (cJSON_IsNumber(item))                                     \
+        {                                                             \
+            reply = redisCommand(ctx,                                 \
+                                 "HSET %s %s %d",                     \
+                                 hash, REDIS_KEY, item->valueint);    \
+            if (reply)                                                \
+                freeReplyObject(reply);                               \
+        }                                                             \
+        else if (cJSON_IsString(item) && item->valuestring)           \
+        {                                                             \
+            reply = redisCommand(ctx,                                 \
+                                 "HSET %s %s %d",                     \
+                                 hash,                                \
+                                 REDIS_KEY,                           \
+                                 atoi(item->valuestring));            \
+            if (reply)                                                \
+                freeReplyObject(reply);                               \
+        }                                                             \
     } while (0)
 
     UPDATE_INT("SLAVE_ID", "slave_id");
@@ -878,7 +1111,9 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
 
 #undef UPDATE_INT
 
-    const char *mod_serial = (serial_port == 1) ? "modrtu_master 0" : "modrtu_master 1";
+    const char *mod_serial = (serial_port == 1) ? "modrtu_master 0"
+                                                : "modrtu_master 1";
+
     reply = redisCommand(ctx, "SADD proc_restart %s", mod_serial);
     if (reply)
     {
@@ -895,8 +1130,10 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
         }
         freeReplyObject(reply);
     }
+
     return 0;
 }
+
 
 int find_meter(redisContext *redis,
                const char *incoming_meter_name,
