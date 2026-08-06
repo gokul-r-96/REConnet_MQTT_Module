@@ -2145,20 +2145,20 @@ cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const 
         // return result;  //rithika commented 28/04/2026
     }
 
-    char output_file_name[64];
-    char base_path[256];
+    // char output_file_name[64];
+    // char base_path[256];
 
-    if (get_base_path(base_path, sizeof(base_path)) == 0)
-    {
-        snprintf(output_file_name, sizeof(output_file_name), "%s/data/%s_%s", base_path, date, serial);
+    // if (get_base_path(base_path, sizeof(base_path)) == 0)
+    // {
+    //     snprintf(output_file_name, sizeof(output_file_name), "%s/data/%s_%s", base_path, date, serial);
 
-        // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
-    }
+    //     // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+    // }
 
-    FILE *fp = fopen(output_file_name, "rb");
+    FILE *fp = fopen(ls_file_name, "rb");
     if (!fp)
     {
-        LOG_ERROR("Unable to open %s", output_file_name);
+        LOG_ERROR("Unable to open %s", ls_file_name);
         return result;
     }
 
@@ -2167,7 +2167,7 @@ cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const 
     fclose(fp);
     result.status = 0;
     result.filesize = json_size;
-    strncpy(result.filename, output_file_name, sizeof(result.filename) - 1);
+    strncpy(result.filename, ls_file_name, sizeof(result.filename) - 1);
     result.filename[sizeof(result.filename) - 1] = '\0';
     printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
 

@@ -363,25 +363,24 @@ static void cdf_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_da
     //     cJSON_Delete(root);
 }
 
-
-static void json_write_d3(FILE *fp, redisContext *ctx,const BillingData *bill_data,const BillingData *bill_data_curr)
+static void json_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_data, const BillingData *bill_data_curr)
 {
     (void)ctx;
-    fprintf(fp,"    \"BILLING_PROFILE\": {\n");
-    fprintf(fp,"      \"FIELDS\":[\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
-    fprintf(fp,"      \"PARAMS\":[\n");
+    fprintf(fp, "    \"BILLING_PROFILE\": {\n");
+    fprintf(fp, "      \"FIELDS\":[\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
+    fprintf(fp, "      \"PARAMS\":[\n");
     /* Print parameter definitions only once */
     if (bill_data->entry_count > 0)
     {
         const BillingEntry *entry = &bill_data->entries[0];
         int first = 1;
-        for(int j=0;j<entry->param_count;j++)
+        for (int j = 0; j < entry->param_count; j++)
         {
-            const BillParam *p=&entry->params[j];
-            if(p->param_name[0]=='\0')
+            const BillParam *p = &entry->params[j];
+            if (p->param_name[0] == '\0')
                 continue;
-            if(!first)
-                fprintf(fp,",\n");
+            if (!first)
+                fprintf(fp, ",\n");
             fprintf(fp,
                     "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
                     p->param_code,
@@ -389,67 +388,67 @@ static void json_write_d3(FILE *fp, redisContext *ctx,const BillingData *bill_da
                     p->param_name,
                     p->unit);
 
-            first=0;
+            first = 0;
         }
     }
 
-    fprintf(fp,"\n");
-    fprintf(fp,"      ],\n");
-    fprintf(fp,"      \"VALUES\":[\n");
+    fprintf(fp, "\n");
+    fprintf(fp, "      ],\n");
+    fprintf(fp, "      \"VALUES\":[\n");
 
     int first_record = 1;
 
     /* Previous billing entries */
-    for(int i=0;i<bill_data->entry_count;i++)
+    for (int i = 0; i < bill_data->entry_count; i++)
     {
-        const BillingEntry *entry=&bill_data->entries[i];
-        if(!first_record)
-            fprintf(fp,",\n");
+        const BillingEntry *entry = &bill_data->entries[i];
+        if (!first_record)
+            fprintf(fp, ",\n");
 
-        fprintf(fp,"        [\"%s\",[",entry->billing_date);
+        fprintf(fp, "        [\"%s\",[", entry->billing_date);
         int first_value = 1;
-        for(int j=0;j<entry->param_count;j++)
+        for (int j = 0; j < entry->param_count; j++)
         {
-            const BillParam *p=&entry->params[j];
-            if(p->param_name[0]=='\0')
+            const BillParam *p = &entry->params[j];
+            if (p->param_name[0] == '\0')
                 continue;
-            if(!first_value)
-                fprintf(fp,",");
-            fprintf(fp,"\"%s\"",p->value);
-            first_value=0;
+            if (!first_value)
+                fprintf(fp, ",");
+            fprintf(fp, "\"%s\"", p->value);
+            first_value = 0;
         }
 
-        fprintf(fp,"]]");
-        first_record=0;
+        fprintf(fp, "]]");
+        first_record = 0;
     }
 
     /* Current month billing entries */
-    for(int i=0;i<bill_data_curr->entry_count;i++)
+    for (int i = 0; i < bill_data_curr->entry_count; i++)
     {
-        const BillingEntry *entry=&bill_data_curr->entries[i];
-        if(!first_record)
-            fprintf(fp,",\n");
+        const BillingEntry *entry = &bill_data_curr->entries[i];
+        if (!first_record)
+            fprintf(fp, ",\n");
 
-        fprintf(fp,"        [\"%s\",[",entry->billing_date);
+        fprintf(fp, "        [\"%s\",[", entry->billing_date);
         int first_value = 1;
-        for(int j=0;j<entry->param_count;j++)
+        for (int j = 0; j < entry->param_count; j++)
         {
-            const BillParam *p=&entry->params[j];
-            if(p->param_name[0]=='\0')
+            const BillParam *p = &entry->params[j];
+            if (p->param_name[0] == '\0')
                 continue;
-            if(!first_value)
-                fprintf(fp,",");
-            fprintf(fp,"\"%s\"",p->value);
-            first_value=0;
+            if (!first_value)
+                fprintf(fp, ",");
+            fprintf(fp, "\"%s\"", p->value);
+            first_value = 0;
         }
 
-        fprintf(fp,"]]");
-        first_record=0;
+        fprintf(fp, "]]");
+        first_record = 0;
     }
 
-    fprintf(fp,"\n");
-    fprintf(fp,"      ]\n");
-    fprintf(fp,"    }\n");
+    fprintf(fp, "\n");
+    fprintf(fp, "      ]\n");
+    fprintf(fp, "    }\n");
 }
 
 /**
@@ -470,12 +469,12 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     struct tm *curr_date = localtime(&now);
     char date[32];
     char curr_year[32] = {0};
-   char month[32];
+    char month[32];
     char str_year[8];
- 
+
     strftime(month, sizeof(month), "%b", curr_date);
     strftime(str_year, sizeof(str_year), "%Y", curr_date);
- 
+
     if (strstr(month, "Jul"))
     {
         sprintf(date, "July %s", str_year);
@@ -484,6 +483,11 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     {
         sprintf(date, "June %s", str_year);
     }
+    else
+    {
+        strftime(date, sizeof(date), "%b %Y", curr_date);
+    }
+    
     if (strcmp(date, year_month) == 0)
     {
         int year;
@@ -584,7 +588,6 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     return 0;
 }
 
-
 int generate_billing_json(redisContext *ctx, const char *serial, const char *year_month, char *output_file)
 {
     time_t now = time(NULL);
@@ -592,21 +595,25 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
     char date[32];
     char curr_year[32] = {0};
 
-     char month[32];
+    char month[32];
     char str_year[8];
- 
+
     strftime(month, sizeof(month), "%b", curr_date);
     strftime(str_year, sizeof(str_year), "%Y", curr_date);
- 
+
     if (strstr(month, "Jul"))
     {
         sprintf(date, "July %s", str_year);
     }
-    else if (strstr(date, "Jun"))
+    else if (strstr(month, "Jun"))
     {
         sprintf(date, "June %s", str_year);
     }
-    
+    else
+    {
+        strftime(date, sizeof(date), "%b %Y", curr_date);
+    }
+
     if (strcmp(date, year_month) == 0)
     {
         int year;
