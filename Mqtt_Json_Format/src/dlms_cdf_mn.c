@@ -71,7 +71,7 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1)
+    if (midnight_cmd_redis_resp == 1 )
     {
         snprintf(table, sizeof(table), "daily_profile_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -493,7 +493,7 @@ int generate_midnight_json(redisContext *ctx, const char *serial, const char *da
     }
 
     /* 4. Write JSON */
-    json_write_header(fp);
+    json_write_header(fp, "MIDNIGHT_DATA_MESSAGE");
     json_write_general(ctx, fp, serial, dt_str);
     json_write_d1(fp, ctx, serial);
     json_write_d6(fp, ctx, &snapshot);

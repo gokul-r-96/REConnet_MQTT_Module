@@ -10,7 +10,7 @@ mqtt_conn_t secondary;
 mqtt_conn_t *current_active = NULL;
 redisContext *ctx;
 
-#define PRI_BROKER_RECONNECT_PERIOD 30
+#define PRI_BROKER_RECONNECT_PERIOD 60
 #define NW_LOGGER_CHECK 30
 
 char meter_serials[MAX_METERS][32];

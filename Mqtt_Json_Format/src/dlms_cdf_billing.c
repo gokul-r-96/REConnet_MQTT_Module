@@ -6,6 +6,10 @@ extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
 extern int ls_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
+
+// rithika 13Aug2026
+int int_cur_month = 0;
+
 /* ============================================================
  *  Billing data helpers
  * ============================================================ */
@@ -76,7 +80,9 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
     static char od_table[128] = {0};
-    if (billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1)
+    // if (billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1)
+    // {
+    if (billing_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "bill_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -213,7 +219,10 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
 
     sqlite3_finalize(stmt);
 
-    if (billing_cmd_redis_resp == 0 && od_table[0] != '\0')
+    // rithika 12Aug2026
+    // if (billing_cmd_redis_resp == 0 && od_table[0] != '\0')
+    // {
+    if (int_cur_month == 0)
     {
         LOG_INFO("Deleting od table %s", od_table);
         drop_table(od_table, db);
@@ -471,6 +480,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     char curr_year[32] = {0};
     char month[32];
     char str_year[8];
+    
 
     strftime(month, sizeof(month), "%b", curr_date);
     strftime(str_year, sizeof(str_year), "%Y", curr_date);
@@ -487,12 +497,13 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     {
         strftime(date, sizeof(date), "%b %Y", curr_date);
     }
-    
+
     if (strcmp(date, year_month) == 0)
     {
         int year;
         sscanf(year_month, "%*s %d", &year);
         sprintf(curr_year, "curr mon %d", year);
+        
     }
     LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
 
@@ -529,7 +540,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
 
     if (strstr(curr_year, "curr mon "))
     {
-
+     
         if (read_billing_data(sqlite_db_path, &status, serial, curr_year, ctx, &bill_data_curr) != 0)
         {
             LOG_ERROR("Cannot read billing data for meter %s year-month %s", serial, curr_year);
@@ -597,6 +608,7 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
 
     char month[32];
     char str_year[8];
+ int_cur_month = 0;
 
     strftime(month, sizeof(month), "%b", curr_date);
     strftime(str_year, sizeof(str_year), "%Y", curr_date);
@@ -619,6 +631,7 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
         int year;
         sscanf(year_month, "%*s %d", &year);
         sprintf(curr_year, "curr mon %d", year);
+        int_cur_month++;
     }
     LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
 
@@ -662,6 +675,7 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
 
     if (strstr(curr_year, "curr mon "))
     {
+        int_cur_month--;
         if (read_billing_data(sqlite_db_path,
                               &status,
                               serial,
@@ -711,7 +725,7 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
     }
 
     /* 4. Write JSON */
-    json_write_header(fp);
+    json_write_header(fp, "BILLING_DATA_MESSAGE");
     json_write_general(ctx, fp, serial, dt_str);
     json_write_d1(fp, ctx, serial);
     json_write_d3(fp, ctx, &bill_data, &bill_data_curr);

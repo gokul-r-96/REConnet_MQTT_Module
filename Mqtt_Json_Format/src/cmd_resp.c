@@ -189,7 +189,7 @@ static int build_cmd_reply(cmd_request_t cmd,int status,const char *msg,char *ou
     strcpy(out_buf, json);
 
     int len = strlen(json);
-
+printf("!!!!!!!!!!!!!!!!!!!!!\n\n%s\n length %d",out_buf, len );
     free(json);
     cJSON_Delete(root);
 

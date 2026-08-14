@@ -524,6 +524,10 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
 cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const char *date, const char *event_type);
 cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const char *date, const char *event_type);
 cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const char *date);
+cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial, const char *date );
+cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *date);
+cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, const char *date);
+
 int build_health_status_xml(redisContext *ctx, char *out_buf, size_t out_sz, int *output_file_sz);
 
 void mqtt_module_start();

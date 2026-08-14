@@ -103,7 +103,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
+    if (event_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "event_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -273,6 +273,8 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
                 continue;
             }
 
+      
+
             /* Event code column (matches evt_map->obis_code) */
             if (strcmp(col_name, evt_map->obis_code) == 0)
             {
@@ -288,6 +290,8 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
                 continue;
             }
 
+                  printf("COLUMN [%d]: OBIS=[%s] VALUE=[%s]\n",
+       col, col_name, val_str);
             /* Regular OBIS parameters */
             char obis_hex[24];
             if (obis_dec_to_hex(col_name, obis_hex) != 0)
@@ -300,6 +304,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
+            
             /* Lookup mapping from Event-specific hash */
             lookup_event_obis_mapping(ctx, col_name,
                                       p->param_code, sizeof(p->param_code),
@@ -427,7 +432,6 @@ static void cdf_write_d5(FILE *fp, redisContext *ctx, const EventData *event_dat
     //     cJSON_Delete(root);
 }
 
-
 static void json_write_d5(FILE *fp, redisContext *ctx, const EventData *event_data)
 {
     (void)ctx;
@@ -436,16 +440,32 @@ static void json_write_d5(FILE *fp, redisContext *ctx, const EventData *event_da
     fprintf(fp, "      \"PARAMS\": [\n");
     int first = 1;
     /* Print parameter definitions only once */
+    printf("111111111111 event_data->entry_count %d \n", event_data->entry_count);
     if (event_data->entry_count > 0)
     {
         const EventEntry *entry = &event_data->entries[0];
+        printf("111111111111 entry->param_count %d\n", entry->param_count);
         for (int j = 0; j < entry->param_count; j++)
         {
             const EventParam *p = &entry->params[j];
+
+            printf("2222 [%d] value=[%s] param_code=[%s] obis=[%s] param_name=[%s] unit=[%s]\n",
+                   j,
+                   p->value,
+                   p->param_code,
+                   p->obis_hex,
+                   p->param_name,
+                   p->unit);
+
             if (strcmp(p->value, "FFFFFFFF") == 0)
                 continue;
-            if (p->param_name[0] == '\0')
+            // rithika commented, eventcode is not updating in the json
+                // if (p->param_name[0] == '\0')
+            //     continue;
+            
+            if (p->obis_hex[0] == '\0')
                 continue;
+
             if (!first)
                 fprintf(fp, ",\n");
             fprintf(fp,
@@ -474,10 +494,14 @@ static void json_write_d5(FILE *fp, redisContext *ctx, const EventData *event_da
         for (int j = 0; j < entry->param_count; j++)
         {
             const EventParam *p = &entry->params[j];
+            printf("333 p->value %s\n", p->value);
             if (strcmp(p->value, "FFFFFFFF") == 0)
                 continue;
-            if (p->param_name[0] == '\0')
+            // if (p->param_name[0] == '\0')
+            //     continue;
+            if (p->obis_hex[0] == '\0')
                 continue;
+                
             if (!first_value)
                 fprintf(fp, ",");
             fprintf(fp, "\"%s\"", p->value);
@@ -492,7 +516,6 @@ static void json_write_d5(FILE *fp, redisContext *ctx, const EventData *event_da
     fprintf(fp, "      ]\n");
     fprintf(fp, "    }\n");
 }
-
 
 /**
  * @brief Generate a CDF file for Event Log data (data type 5).
@@ -590,7 +613,7 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
     return 0;
 }
 
-int generate_event_log_json(redisContext *ctx, const char *serial,const char *date, const char *event_type,char *output_file)
+int generate_event_log_json(redisContext *ctx, const char *serial, const char *date, const char *event_type, char *output_file)
 {
     LOG_INFO("Generating Event Log JSON for meter %s date=%s event_type=%s",
              serial, date, event_type);
@@ -613,7 +636,7 @@ int generate_event_log_json(redisContext *ctx, const char *serial,const char *da
     }
     /* 2. Read Event data */
     EventData event_data;
-    if (read_event_data(sqlite_db_path,&status,serial,date,event_type,ctx,&event_data) != 0)
+    if (read_event_data(sqlite_db_path, &status, serial, date, event_type, ctx, &event_data) != 0)
     {
         LOG_ERROR("Cannot read event data for meter %s", serial);
     }
@@ -630,7 +653,7 @@ int generate_event_log_json(redisContext *ctx, const char *serial,const char *da
     char base_path[256];
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
-        snprintf(out_path,sizeof(out_path),"%s/data/EVENT_%s_%s_%s.json",base_path,serial,date,event_type);
+        snprintf(out_path, sizeof(out_path), "%s/data/EVENT_%s_%s_%s.json", base_path, serial, date, event_type);
     }
     FILE *fp = fopen(out_path, "w");
     if (!fp)
@@ -644,7 +667,7 @@ int generate_event_log_json(redisContext *ctx, const char *serial,const char *da
     }
 
     /* 4. Write JSON */
-    json_write_header(fp);
+    json_write_header(fp, "EVENT_DATA_MESSAGE");
     json_write_general(ctx, fp, serial, dt_str);
     json_write_d1(fp, ctx, serial);
     json_write_d5(fp, ctx, &event_data);

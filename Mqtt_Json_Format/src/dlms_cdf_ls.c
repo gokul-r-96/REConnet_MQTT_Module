@@ -278,7 +278,9 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (ls_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
+    // if (ls_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
+    // {
+    if (ls_cmd_redis_resp == 1 )
     {
         snprintf(table, sizeof(table), "ls_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -515,7 +517,6 @@ static void cdf_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profil
     //     cJSON_Delete(root);
 }
 
-
 static void json_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profile)
 {
     (void)ctx;
@@ -571,7 +572,7 @@ static void json_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profi
                 continue;
             if (!first_value)
                 fprintf(fp, ",");
-            fprintf(fp,"\"%s\"",p->value);
+            fprintf(fp, "\"%s\"", p->value);
             first_value = 0;
         }
         fprintf(fp, "]]");
@@ -691,18 +692,18 @@ int generate_load_profile_json(redisContext *ctx, const char *serial, const char
     char sqlite_db_path[256];
     if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
     {
-        snprintf(sqlite_db_path,sizeof(sqlite_db_path),"%s/data/dcu_dlms.db",base_path_dir);
+        snprintf(sqlite_db_path, sizeof(sqlite_db_path), "%s/data/dcu_dlms.db", base_path_dir);
     }
     /* 2. Read Load Survey data */
     LSDayProfile day_profile;
-    if (read_ls_data(sqlite_db_path,&status,serial,date,ctx,&day_profile) != 0)
+    if (read_ls_data(sqlite_db_path, &status, serial, date, ctx, &day_profile) != 0)
     {
-        LOG_ERROR("Cannot read LS data for meter %s date %s",serial,date);
+        LOG_ERROR("Cannot read LS data for meter %s date %s", serial, date);
     }
 
     if (day_profile.interval_count == 0)
     {
-        LOG_WARN("No LS data found for meter %s on date %s",serial,date);
+        LOG_WARN("No LS data found for meter %s on date %s", serial, date);
     }
 
     /* 3. Build output file path */
@@ -714,18 +715,18 @@ int generate_load_profile_json(redisContext *ctx, const char *serial, const char
 
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
-        snprintf(out_path,sizeof(out_path),"%s/data/LS_%s_%s.json",base_path,serial,date);
+        snprintf(out_path, sizeof(out_path), "%s/data/LS_%s_%s.json", base_path, serial, date);
     }
     FILE *fp = fopen(out_path, "w");
     if (!fp)
     {
-        LOG_ERROR("Cannot open output file: %s (%s)",out_path,strerror(errno));
+        LOG_ERROR("Cannot open output file: %s (%s)", out_path, strerror(errno));
         ls_day_profile_free(&day_profile);
         return -1;
     }
 
     /* 4. Write JSON */
-    json_write_header(fp);
+    json_write_header(fp, "LS_DATA_MESSAGE");
     json_write_general(ctx, fp, serial, dt_str);
     json_write_d1(fp, ctx, serial);
     json_write_d4(fp, ctx, &day_profile);

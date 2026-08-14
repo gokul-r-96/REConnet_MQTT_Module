@@ -17,6 +17,11 @@
 
 #include "../include/general.h"
 
+extern int event_cmd_redis_resp;
+extern int ls_cmd_redis_resp;
+extern int billing_cmd_redis_resp;
+extern int midnight_cmd_redis_resp;
+extern int get_day_cmd;
 /**
  * @brief Return current date string (for filenames/CDF DATE attribute).
  * @param buf    Output buffer.
@@ -909,13 +914,21 @@ void cdf_write_footer(FILE *fp)
 //     return result;
 // }
 
-void json_write_header(FILE *fp)
+void json_write_header(FILE *fp, char *data_Type)
 {
     fprintf(fp, "{\n");
 
-    fprintf(fp, "  \"TYPE\": \"CYCLIC_MESSAGE\",\n");
+    if (event_cmd_redis_resp == 1 || ls_cmd_redis_resp == 1 || billing_cmd_redis_resp == 1 || midnight_cmd_redis_resp == 1)
+    {
+        fprintf(fp, "  \"TYPE\": \"OD_RESP_MESSAGE\",\n");
+    }
+    else
+    {
+        fprintf(fp, "  \"TYPE\": \"CYCLIC_MESSAGE\",\n");
+    }
+
     fprintf(fp, "  \"SEQ_NUM\": \"0002\",\n");
-    fprintf(fp, "  \"DATATYPE\": \"INST_DATA_MESSAGE\",\n");
+    fprintf(fp, "  \"DATATYPE\": \"%s\",\n", data_Type);
 }
 
 void json_write_general(redisContext *ctx, FILE *fp, const char *serial, const char *dt_str)
@@ -1233,7 +1246,7 @@ cdf_result_t generate_instantaneous_json(redisContext *ctx, const char *serial)
     }
 
     /* JSON writing functions - we'll create these next */
-    json_write_header(fp);
+    json_write_header(fp, "INST_DATA_MESSAGE");
     json_write_general(ctx, fp, serial, dt_str);
     json_write_d1(fp, ctx, serial);
     json_write_d2(fp, ctx, &snapshot);
@@ -1490,7 +1503,15 @@ int concatenate_files(char *outfile, const char *ls_file, const char *mn_file, c
     // copy_item(out_root, ls_root, "SEQ_NUM");
     // copy_item(out_root, ls_root, "DATATYPE");
 
-    cJSON_AddStringToObject(out_root, "TYPE", "CYCLIC_MESSAGE");
+    if (get_day_cmd == 1)
+    {
+        cJSON_AddStringToObject(out_root, "TYPE", "OD_RESP_MESSAGE");
+    }
+    else
+    {
+        cJSON_AddStringToObject(out_root, "TYPE", "CYCLIC_MESSAGE");
+    }
+
     cJSON_AddStringToObject(out_root, "SEQ_NUM", "0003");
     cJSON_AddStringToObject(out_root, "DATATYPE", "METER_DATA_MESSAGE");
     copy_item(out_root, ls_root, "NP");
@@ -2135,9 +2156,6 @@ cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const 
     result.filename[0] = '\0';
 
     char ls_file_name[128];
-    char mn_file_name[128];
-    char billing_file_name[128];
-    char event_file_name[128];
 
     int rc1 = generate_load_profile_json(ctx, serial, date, ls_file_name);
     if (rc1 != 0)
@@ -2168,6 +2186,132 @@ cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const 
     result.status = 0;
     result.filesize = json_size;
     strncpy(result.filename, ls_file_name, sizeof(result.filename) - 1);
+    result.filename[sizeof(result.filename) - 1] = '\0';
+    printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
+
+    return result;
+}
+
+cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial, const char *date)
+{
+
+    cdf_result_t result;
+    result.status = -1;
+    result.filesize = 0;
+    result.filename[0] = '\0';
+
+    char billing_file_name[128];
+
+    int y, m, d;
+    char bill_date[64];
+
+    // sscanf(date, "%d-%d-%d", &y, &m, &d);
+
+    if (sscanf(date, "%d_%d", &m, &y) != 2)
+    {
+        LOG_ERROR("Invalid billing date format: %s", date);
+        return result;
+    }
+
+    if (m < 1 || m > 12)
+    {
+        LOG_ERROR("Invalid month: %d", m);
+        return result;
+    }
+
+    const char *months[] = {
+        "", "Jan", "Feb", "Mar", "Apr", "May", "June",
+        "July", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+    sprintf(bill_date, "%s %d", months[m], y);
+
+    int rc2 = generate_billing_json(ctx, serial, bill_date, billing_file_name);
+    if (rc2 != 0)
+    {
+        // return result; //rithika commented 28/04/2026
+    }
+
+    FILE *fp = fopen(billing_file_name, "rb");
+    if (!fp)
+    {
+        LOG_ERROR("Unable to open %s", billing_file_name);
+        return result;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long json_size = ftell(fp);
+    fclose(fp);
+    result.status = 0;
+    result.filesize = json_size;
+    strncpy(result.filename, billing_file_name, sizeof(result.filename) - 1);
+    result.filename[sizeof(result.filename) - 1] = '\0';
+    printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
+
+    return result;
+}
+
+cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *date)
+{
+    cdf_result_t result;
+    result.status = -1;
+    result.filesize = 0;
+    result.filename[0] = '\0';
+
+    char mn_file_name[128];
+
+    int rc3 = generate_midnight_json(ctx, serial, date, mn_file_name);
+    if (rc3 != 0)
+    {
+        // return result; //rithika commented 28/04/2026
+    }
+
+    FILE *fp = fopen(mn_file_name, "rb");
+    if (!fp)
+    {
+        LOG_ERROR("Unable to open %s", mn_file_name);
+        return result;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long json_size = ftell(fp);
+    fclose(fp);
+    result.status = 0;
+    result.filesize = json_size;
+    strncpy(result.filename, mn_file_name, sizeof(result.filename) - 1);
+    result.filename[sizeof(result.filename) - 1] = '\0';
+    printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
+
+    return result;
+}
+
+cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, const char *date)
+{
+    cdf_result_t result;
+    result.status = -1;
+    result.filesize = 0;
+    result.filename[0] = '\0';
+
+    char event_file_name[128];
+
+    int rc4 = generate_event_log_json(ctx, serial, date, "all", event_file_name);
+    if (rc4 != 0)
+    {
+        // return result; //rithika commented 28/04/2026
+    }
+
+    FILE *fp = fopen(event_file_name, "rb");
+    if (!fp)
+    {
+        LOG_ERROR("Unable to open %s", event_file_name);
+        return result;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long json_size = ftell(fp);
+    fclose(fp);
+    result.status = 0;
+    result.filesize = json_size;
+    strncpy(result.filename, event_file_name, sizeof(result.filename) - 1);
     result.filename[sizeof(result.filename) - 1] = '\0';
     printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
 
