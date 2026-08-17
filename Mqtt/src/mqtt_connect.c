@@ -1434,6 +1434,16 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         check_redis_resp = 1;
         generate_redis_list(cmd);
     }
+
+    else if (strcmp(cmd.type, "Reset") == 0 && cmd.args[0][0] != '\0')
+    {
+        msg_size = reset_resp_msg(cmd, output_msg);
+        mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        sleep(1);
+        LOG_INFO("System is going to reboot. Reset Command Received!!!");
+        sync();
+        system("reboot");
+    }
 }
 
 // int on_message_arrived(void *context,

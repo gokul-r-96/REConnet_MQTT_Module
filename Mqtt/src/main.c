@@ -10,7 +10,7 @@ mqtt_conn_t secondary;
 mqtt_conn_t *current_active = NULL;
 redisContext *ctx;
 
-#define PRI_BROKER_RECONNECT_PERIOD 30
+#define PRI_BROKER_RECONNECT_PERIOD 60
 #define NW_LOGGER_CHECK 30
 
 char meter_serials[MAX_METERS][32];
@@ -23,6 +23,9 @@ time_t primary_mqtt_conn_time;
 time_t secn_mqtt_conn_time;
 int cur_active_mqtt = -1;
 char dcu_ser_num[SIZE_32];
+
+char primary_status_hash[32];
+char secondary_status_hash[32];
 
 extern int check_redis_resp;
 /*Gokul added the below variables for mqtt connecting --> 02/05/2026 */
@@ -589,44 +592,45 @@ void *mqtt_worker_thread(void *arg)
             {
                 if (active == 0) // PRIMARY
                 {
-                    rly = redisCommand(ctx, "HSET mqtt_0_status connection_status connected");
+                    rly = redisCommand(ctx,"HSET %s connection_status connected",primary_status_hash);
                     if (rly)
                         freeReplyObject(rly);
 
-                    rly = redisCommand(ctx, "HSET mqtt_1_status connection_status disconnected");
+                    rly = redisCommand(ctx,"HSET %s connection_status disconnected",secondary_status_hash);
                     if (rly)
                         freeReplyObject(rly);
                 }
                 else if (active == 1) // SECONDARY
                 {
-                    rly = redisCommand(ctx, "HSET mqtt_1_status connection_status connected");
+                    rly = redisCommand(ctx,"HSET %s connection_status connected",secondary_status_hash);
                     if (rly)
                         freeReplyObject(rly);
 
-                    rly = redisCommand(ctx, "HSET mqtt_0_status connection_status disconnected");
+                    rly = redisCommand(ctx,"HSET %s connection_status disconnected",primary_status_hash);
                     if (rly)
                         freeReplyObject(rly);
                 }
                 else
                 {
-                    // no broker
-                    rly = redisCommand(ctx, "HSET mqtt_0_status connection_status disconnected");
+                    // No broker active
+                    rly = redisCommand(ctx,"HSET %s connection_status disconnected",primary_status_hash);
                     if (rly)
                         freeReplyObject(rly);
 
-                    rly = redisCommand(ctx, "HSET mqtt_1_status connection_status disconnected");
+                    rly = redisCommand(ctx,"HSET %s connection_status disconnected",secondary_status_hash);
                     if (rly)
                         freeReplyObject(rly);
                 }
             }
             else
             {
-                // DISCONNECTED case
-                rly = redisCommand(ctx, "HSET mqtt_0_status connection_status %s", mqtt_status_value);
+                // DISCONNECTED / OTHER STATUS
+
+                rly = redisCommand(ctx,"HSET %s connection_status %s",primary_status_hash,mqtt_status_value);
                 if (rly)
                     freeReplyObject(rly);
 
-                rly = redisCommand(ctx, "HSET mqtt_1_status connection_status %s", mqtt_status_value);
+                rly = redisCommand(ctx,"HSET %s connection_status %s",secondary_status_hash,mqtt_status_value);
                 if (rly)
                     freeReplyObject(rly);
             }
@@ -642,18 +646,17 @@ void *mqtt_worker_thread(void *arg)
             {
                 if (mqtt_time_update_last)
                 {
-                    rly = redisCommand(ctx, "HSET mqtt_0_status uptime %s last_message_time %s", mqtt_time_uptime, mqtt_time_lastmsg);
+                    rly = redisCommand(ctx,"HSET %s uptime %s last_message_time %s",primary_status_hash,mqtt_time_uptime,mqtt_time_lastmsg);
                     if (rly)
                         freeReplyObject(rly);
                 }
                 else
                 {
-                    rly = redisCommand(ctx, "HSET mqtt_0_status uptime %s", mqtt_time_uptime);
+                    rly = redisCommand(ctx,"HSET %s uptime %s",primary_status_hash,mqtt_time_uptime);
                     if (rly)
                         freeReplyObject(rly);
                 }
-
-                rly = redisCommand(ctx, "HSET mqtt_1_status uptime 0s");
+                rly = redisCommand(ctx,"HSET %s uptime 0s",secondary_status_hash);
                 if (rly)
                     freeReplyObject(rly);
             }
@@ -661,25 +664,27 @@ void *mqtt_worker_thread(void *arg)
             {
                 if (mqtt_time_update_last)
                 {
-                    rly = redisCommand(ctx, "HSET mqtt_1_status uptime %s last_message_time %s", mqtt_time_uptime, mqtt_time_lastmsg);
+                    rly = redisCommand(ctx,"HSET %s uptime %s last_message_time %s",secondary_status_hash,mqtt_time_uptime,mqtt_time_lastmsg);
                     if (rly)
                         freeReplyObject(rly);
                 }
                 else
                 {
-                    rly = redisCommand(ctx, "HSET mqtt_1_status uptime %s", mqtt_time_uptime);
+                    rly = redisCommand(ctx,"HSET %s uptime %s",secondary_status_hash,mqtt_time_uptime);
                     if (rly)
                         freeReplyObject(rly);
                 }
-
-                rly = redisCommand(ctx, "HSET mqtt_0_status uptime 0s");
+                rly = redisCommand(ctx,"HSET %s uptime 0s",primary_status_hash);
                 if (rly)
                     freeReplyObject(rly);
             }
             else // NONE
             {
-                rly = redisCommand(ctx,
-                                   "HSET mqtt_0_status uptime 0s; HSET mqtt_1_status uptime 0s");
+                rly = redisCommand(ctx,"HSET %s uptime 0s",primary_status_hash);
+                if (rly)
+                    freeReplyObject(rly);
+
+                rly = redisCommand(ctx,"HSET %s uptime 0s",secondary_status_hash);
                 if (rly)
                     freeReplyObject(rly);
             }
@@ -688,15 +693,10 @@ void *mqtt_worker_thread(void *arg)
         if(mqtt_cmd_recv)
         {
             char local_cmd[4096];
-
             pthread_mutex_lock(&cmd_mutex);
-
             strcpy(local_cmd,mqtt_cmd_buffer);
-
             mqtt_cmd_recv = 0;
-
             pthread_mutex_unlock(&cmd_mutex);
-
 
             processServerMsg(current_active, local_cmd);
         }
@@ -902,12 +902,18 @@ void mqtt_module_start()
 
     LOG_INFO("[INIT] Loading MQTT configs");
     int is_primary = redis_get_int(ctx, "mqtt_0_cfg", "primary");
+
     if (is_primary)
     {
         certificate_path_check_primary = 0;
         certificate_path_check_secondary = 1;
+
+        strcpy(primary_status_hash, "mqtt_0_status");
+        strcpy(secondary_status_hash, "mqtt_1_status");
+
         LOG_INFO("Mqtt-1 is configured as primary!!!");
         load_mqtt_cfg("mqtt_0_cfg", &primary.cfg);
+
         LOG_INFO("Mqtt-2 is configured as secondary!!!");
         load_mqtt_cfg("mqtt_1_cfg", &secondary.cfg);
     }
@@ -915,8 +921,13 @@ void mqtt_module_start()
     {
         certificate_path_check_primary = 1;
         certificate_path_check_secondary = 0;
+
+        strcpy(primary_status_hash, "mqtt_1_status");
+        strcpy(secondary_status_hash, "mqtt_0_status");
+
         LOG_INFO("Mqtt-2 is configured as primary!!!");
         load_mqtt_cfg("mqtt_1_cfg", &primary.cfg);
+
         LOG_INFO("Mqtt-1 is configured as secondary!!!");
         load_mqtt_cfg("mqtt_0_cfg", &secondary.cfg);
     }
