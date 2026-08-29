@@ -25,6 +25,8 @@
 /* Max limits — must match module config headers */
 #define MAX_DEVICES         32
 #define MAX_REGS_PER_DEV    128
+#define MAX_MODRTU_DEVICES  5
+#define MAX_MODTCP_DEVICES  10
 
 /* =========================================================================
  * Growable JSON buffer
@@ -320,12 +322,18 @@ static int export_modrtu_device(jbuf_t *jb, redisContext *ctx,
     rget_str(ctx, status_key, "last_communication", last_comm, sizeof(last_comm));
 
     /* Map status string */
-    const char *status_out = "Not Connected";
+    // const char *status_out = "Not Connected";
+    const char *status_out = "Not Communicating";
     if (strcmp(status_str, "communicating") == 0)
-        status_out = "Connected";
+    {
+        // status_out = "Connected";
+        status_out = "Communicating";
+    }
+        
 
     jbuf_append(jb, "{\n");
     jbuf_append(jb,"\"type\": \"RTU\",\n");
+    jbuf_append(jb, "\"port\": %u,\n", port_id + 1);
     jbuf_append(jb, "\"slave_id\": %d,\n", slave_id);
     jbuf_append(jb, "\"ip_addr\": \"\",\n");  /* RTU — no IP */
     jbuf_append(jb, "\"last_update_time\": "); jbuf_append_escaped(jb, last_comm); jbuf_append(jb, ",\n");
@@ -419,9 +427,14 @@ static int export_modtcp_device(jbuf_t *jb, redisContext *ctx,
     rget_str(ctx, status_key, "status", status_str, sizeof(status_str));
     rget_str(ctx, status_key, "last_communication", last_comm, sizeof(last_comm));
 
-    const char *status_out = "Not Connected";
+    // const char *status_out = "Not Connected";
+    const char *status_out = "Not Communicating";
     if (strcmp(status_str, "communicating") == 0)
-        status_out = "Connected";
+    {
+        // status_out = "Connected";
+        status_out = "Communicating";
+    }
+        
 
     jbuf_append(jb, "{\n");
     jbuf_append(jb,"\"type\": \"TCP\",\n");
@@ -486,6 +499,242 @@ static int export_modtcp_device(jbuf_t *jb, redisContext *ctx,
  * Public API
  * ========================================================================= */
 
+// char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
+// {
+//     if (!ctx)
+//         return NULL;
+
+//     jbuf_t jb;
+//     if (jbuf_init(&jb) < 0)
+//         return NULL;
+
+//     jbuf_append(&jb, "{\n");
+
+//     /* --- DCU nameplate --- */
+//     export_dcu_nameplate(&jb, ctx);
+//     jbuf_append(&jb, ",\n\n");
+
+//     /* --- Collect all enabled devices (modrtu + modtcp) to handle trailing comma --- */
+
+//     /* First pass: count total enabled devices */
+//     int total_devices = 0;
+
+//     // for (uint16_t p = 0; p < num_serial_ports; p++) {
+//     //     for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++) {
+//     //         char cfg_key[128];
+//     //         snprintf(cfg_key, sizeof(cfg_key), "modrtu_serial%u_%u_cfg", p, d);
+//     //         if (rget_int(ctx, cfg_key, "enable_device", 0) > 0)
+//     //             total_devices++;
+//     //     }
+//     // }
+//     for (uint16_t p = 0; p < num_serial_ports; p++)
+//     {
+//         char key[128];
+//         snprintf(key, sizeof(key), "serial_port_%u_cfg", p);
+
+//         if (rget_int(ctx, key, "device_type", 0) != 2)
+//             continue;
+
+//         for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+//         {
+//             snprintf(key, sizeof(key), "modrtu_serial%u_%u_cfg", p, d);
+
+//             if (rget_int(ctx, key, "enable_device", 0) > 0)
+//                 total_devices++;
+//         }
+//     }
+
+//     for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++) {
+//         char cfg_key[128];
+//         snprintf(cfg_key, sizeof(cfg_key), "modtcp_%u_cfg", d);
+//         if (rget_int(ctx, cfg_key, "enable_device", 0) > 0)
+//             total_devices++;
+//     }
+
+//     /* --- Export devices --- */
+//     jbuf_append(&jb, "\"modbus_devices\":[\n");
+
+//     int dev_count = 0;
+
+//     /* modrtu devices */
+//     // for (uint16_t p = 0; p < num_serial_ports; p++) {
+//     //     for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++) {
+//     //         dev_count++;
+//     //         int is_last = (dev_count == total_devices);
+//     //         if (export_modrtu_device(&jb, ctx, p, d, is_last))
+//     //             ;  /* exported */
+//     //         else
+//     //             dev_count--;  /* wasn't exported, adjust count */
+//     //     }
+//     // }
+
+//     for (uint16_t p = 0; p < num_serial_ports; p++)
+//     {
+//         char key[128];
+//         snprintf(key, sizeof(key), "serial_port_%u_cfg", p);
+//         if (rget_int(ctx, key, "device_type", 0) != 2)
+//             continue;
+//         for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+//         {
+//             dev_count++;
+//             int is_last = (dev_count == total_devices);
+//             if (!export_modrtu_device(&jb, ctx, p, d, is_last))
+//                 dev_count--;
+//         }
+//     }
+
+//     /* modtcp devices */
+//     for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++) {
+//         dev_count++;
+//         int is_last = (dev_count == total_devices);
+//         if (export_modtcp_device(&jb, ctx, d, is_last))
+//             ;
+//         else
+//             dev_count--;
+//     }
+
+//     /* Safety: trim any stray trailing comma */
+//     jbuf_trim_comma(&jb);
+//     jbuf_append(&jb, "\n]\n");
+
+//     jbuf_append(&jb, "}\n");
+
+//     return jb.data;
+// }
+
+// char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
+// {
+//     if (!ctx)
+//         return NULL;
+
+//     jbuf_t jb;
+//     if (jbuf_init(&jb) < 0)
+//         return NULL;
+
+//     jbuf_append(&jb, "{\n");
+
+//     /* --- DCU nameplate --- */
+//     export_dcu_nameplate(&jb, ctx);
+//     jbuf_append(&jb, ",\n\n");
+
+//     /* ============================================================
+//      * Collect all enabled devices
+//      * ============================================================ */
+//     int total_devices = 0;
+
+//     /* --- Count enabled Modbus RTU devices --- */
+//     for (uint16_t p = 0; p < num_serial_ports; p++)
+//     {
+//         char key[128];
+
+//         snprintf(key, sizeof(key),"serial_port_%u_cfg", p);
+//         /* Only ports configured for Modbus are considered */
+//         if (rget_int(ctx, key, "device_type", 0) != 2)
+//             continue;
+
+//         for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+//         {
+//             snprintf(key, sizeof(key),"modrtu_serial%u_%u_cfg", p, d);
+//             if (rget_int(ctx, key, "enable_device", 0) > 0)
+//                 total_devices++;
+//         }
+//     }
+
+//     /* --- Count enabled Modbus TCP devices --- */
+//     for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++)
+//     {
+//         char cfg_key[128];
+//         snprintf(cfg_key, sizeof(cfg_key),"modtcp_%u_cfg", d);
+
+//         if (rget_int(ctx, cfg_key, "enable_device", 0) > 0)
+//             total_devices++;
+//     }
+
+//     /* ============================================================
+//      * Modbus serial port status
+//      * ============================================================ */
+//     jbuf_append(&jb, "\"modbus_ports\":[\n");
+//     int port_status_count = 0;
+//     for (uint16_t p = 0; p < num_serial_ports; p++)
+//     {
+//         char key[128];
+//         snprintf(key, sizeof(key),"serial_port_%u_cfg", p);
+
+//         /* Only consider serial ports configured for Modbus */
+//         if (rget_int(ctx, key, "device_type", 0) != 2)
+//             continue;
+
+//         int port_devices = 0;
+
+//         /* Check whether at least one RTU device is enabled */
+//         for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+//         {
+//             snprintf(key, sizeof(key),"modrtu_serial%u_%u_cfg", p, d);
+//             if (rget_int(ctx, key, "enable_device", 0) > 0)
+//             {
+//                 port_devices = 1;
+//                 break;
+//             }
+//         }
+
+//         if (port_status_count > 0)
+//             jbuf_append(&jb, ",\n");
+
+//         jbuf_append(&jb, "{\n");
+//         jbuf_append(&jb, "\"port\": %u,\n", p);
+//         jbuf_append(&jb, "\"status\": ");
+
+//         if (port_devices)
+//             jbuf_append_escaped(&jb, "Devices Enabled");
+//         else
+//             jbuf_append_escaped(&jb, "No Devices Enabled");
+
+//         jbuf_append(&jb, "\n}");
+//         port_status_count++;
+//     }
+//     jbuf_append(&jb, "\n],\n\n");
+//     /* ============================================================
+//      * Export devices
+//      * ============================================================ */
+//     jbuf_append(&jb, "\"modbus_devices\":[\n");
+//     int dev_count = 0;
+
+//     /* --- Modbus RTU devices --- */
+//     for (uint16_t p = 0; p < num_serial_ports; p++)
+//     {
+//         char key[128];
+//         snprintf(key, sizeof(key),"serial_port_%u_cfg", p);
+
+//         /* Only export devices from Modbus serial ports */
+//         if (rget_int(ctx, key, "device_type", 0) != 2)
+//             continue;
+
+//         for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+//         {
+//             dev_count++;
+//             int is_last = (dev_count == total_devices);
+//             if (!export_modrtu_device(&jb, ctx, p, d, is_last))
+//                 dev_count--;
+//         }
+//     }
+
+//     /* --- Modbus TCP devices --- */
+//     for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++)
+//     {
+//         dev_count++;
+//         int is_last = (dev_count == total_devices);
+//         if (!export_modtcp_device(&jb, ctx, d, is_last))
+//             dev_count--;
+//     }
+
+//     /* Safety: trim any stray trailing comma */
+//     jbuf_trim_comma(&jb);
+//     jbuf_append(&jb, "\n]\n");
+//     jbuf_append(&jb, "}\n");
+
+//     return jb.data;
+// }
+
 char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
 {
     if (!ctx)
@@ -496,63 +745,133 @@ char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
         return NULL;
 
     jbuf_append(&jb, "{\n");
-
-    /* --- DCU nameplate --- */
     export_dcu_nameplate(&jb, ctx);
     jbuf_append(&jb, ",\n\n");
 
-    /* --- Collect all enabled devices (modrtu + modtcp) to handle trailing comma --- */
-
-    /* First pass: count total enabled devices */
     int total_devices = 0;
 
-    for (uint16_t p = 0; p < num_serial_ports; p++) {
-        for (uint16_t d = 0; d < MAX_DEVICES; d++) {
-            char cfg_key[128];
-            snprintf(cfg_key, sizeof(cfg_key), "modrtu_serial%u_%u_cfg", p, d);
-            if (rget_int(ctx, cfg_key, "enable_device", 0) > 0)
+    /* Count enabled RTU devices */
+    for (uint16_t p = 0; p < num_serial_ports; p++)
+    {
+        char key[128];
+        snprintf(key, sizeof(key), "serial_port_%u_cfg", p);
+        if (rget_int(ctx, key, "device_type", 0) != 2)
+            continue;
+
+        for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+        {
+            snprintf(key, sizeof(key), "modrtu_serial%u_%u_cfg", p, d);
+            if (rget_int(ctx, key, "enable_device", 0) > 0)
                 total_devices++;
         }
     }
 
-    for (uint16_t d = 0; d < MAX_DEVICES; d++) {
-        char cfg_key[128];
-        snprintf(cfg_key, sizeof(cfg_key), "modtcp_%u_cfg", d);
-        if (rget_int(ctx, cfg_key, "enable_device", 0) > 0)
+    /* Count enabled TCP devices */
+    for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++)
+    {
+        char key[128];
+        snprintf(key, sizeof(key), "modtcp_%u_cfg", d);
+        if (rget_int(ctx, key, "enable_device", 0) > 0)
             total_devices++;
     }
 
-    /* --- Export devices --- */
+    /* Modbus RTU port status */
+    jbuf_append(&jb, "\"modbus_serial_ports\":[\n");
+
+    for (uint16_t p = 0; p < num_serial_ports; p++)
+    {
+        char key[128];
+        snprintf(key, sizeof(key), "serial_port_%u_cfg", p);
+        int modrtu_configured =
+            (rget_int(ctx, key, "device_type", 0) == 2);
+        int devices_enabled = 0;
+        if (modrtu_configured)
+        {
+            for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+            {
+                snprintf(key, sizeof(key),"modrtu_serial%u_%u_cfg", p, d);
+                if (rget_int(ctx, key, "enable_device", 0) > 0)
+                {
+                    devices_enabled = 1;
+                    break;
+                }
+            }
+        }
+
+        if (p > 0)
+            jbuf_append(&jb, ",\n");
+
+        jbuf_append(&jb, "{\n");
+        jbuf_append(&jb, "\"port\": %u,\n", p + 1);
+        jbuf_append(&jb, "\"modrtu_configured\": %s,\n",
+                    modrtu_configured ? "true" : "false");
+        jbuf_append(&jb, "\"devices_enabled\": %s\n",
+                    devices_enabled ? "true" : "false");
+        jbuf_append(&jb, "}");
+    }
+
+    jbuf_append(&jb, "\n],\n\n");
+
+    /* Modbus TCP status */
+    int modtcp_configured = 0;
+    int modtcp_devices_enabled = 0;
+
+    for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++)
+    {
+        char key[128];
+        snprintf(key, sizeof(key), "modtcp_%u_cfg", d);
+
+        if (rget_int(ctx, key, "enable_device", 0) > 0)
+        {
+            modtcp_configured = 1;
+            modtcp_devices_enabled = 1;
+            break;
+        }
+    }
+
+    jbuf_append(&jb, "\"modbus_tcp\":{\n");
+    jbuf_append(&jb, "\"modtcp_configured\": %s,\n",
+                modtcp_configured ? "true" : "false");
+    jbuf_append(&jb, "\"devices_enabled\": %s\n",
+                modtcp_devices_enabled ? "true" : "false");
+    jbuf_append(&jb, "},\n\n");
+
+    /* Modbus devices */
     jbuf_append(&jb, "\"modbus_devices\":[\n");
 
     int dev_count = 0;
 
-    /* modrtu devices */
-    for (uint16_t p = 0; p < num_serial_ports; p++) {
-        for (uint16_t d = 0; d < MAX_DEVICES; d++) {
+    /* RTU devices */
+    for (uint16_t p = 0; p < num_serial_ports; p++)
+    {
+        char key[128];
+        snprintf(key, sizeof(key), "serial_port_%u_cfg", p);
+
+        if (rget_int(ctx, key, "device_type", 0) != 2)
+            continue;
+
+        for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
+        {
+            int before = dev_count;
             dev_count++;
             int is_last = (dev_count == total_devices);
-            if (export_modrtu_device(&jb, ctx, p, d, is_last))
-                ;  /* exported */
-            else
-                dev_count--;  /* wasn't exported, adjust count */
+            if (!export_modrtu_device(&jb, ctx, p, d, is_last))
+                dev_count = before;
         }
     }
 
-    /* modtcp devices */
-    for (uint16_t d = 0; d < MAX_DEVICES; d++) {
+    /* TCP devices */
+    for (uint16_t d = 0; d < MAX_MODTCP_DEVICES; d++)
+    {
+        int before = dev_count;
         dev_count++;
         int is_last = (dev_count == total_devices);
-        if (export_modtcp_device(&jb, ctx, d, is_last))
-            ;
-        else
-            dev_count--;
+        if (!export_modtcp_device(&jb, ctx, d, is_last))
+            dev_count = before;
     }
 
-    /* Safety: trim any stray trailing comma */
     jbuf_trim_comma(&jb);
     jbuf_append(&jb, "\n]\n");
-
     jbuf_append(&jb, "}\n");
 
     return jb.data;

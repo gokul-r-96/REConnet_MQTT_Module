@@ -1256,6 +1256,116 @@ static void print_usage(const char *prog)
 //     return (rc == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 // }
 
+// cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const char *date, const char *event_type)
+// {
+//     cdf_result_t result;
+//     result.status = -1;
+//     result.filesize = 0;
+//     result.filename[0] = '\0';
+
+//     char ls_file_name[128];
+//     char mn_file_name[128];
+//     char billing_file_name[128];
+//     char event_file_name[128];
+
+//     int rc1 = generate_load_profile_cdf(ctx, serial, date, ls_file_name);
+//     if (rc1 != 0)
+//     {
+//         // return result;  //rithika commented 28/04/2026
+//     }
+
+//     int y, m, d;
+//     char bill_date[64];
+
+//     sscanf(date, "%d-%d-%d", &y, &m, &d);
+
+//     const char *months[] = {
+//         "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+//         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+//     sprintf(bill_date, "%s %d", months[m], y);
+
+//     int rc2 = generate_billing_cdf(ctx, serial, bill_date, billing_file_name);
+//     if (rc2 != 0)
+//     {
+//         // return result; //rithika commented 28/04/2026
+//     }
+
+//     int rc3 = generate_midnight_cdf(ctx, serial, date, mn_file_name);
+//     if (rc3 != 0)
+//     {
+//         // return result; //rithika commented 28/04/2026
+//     }
+
+//     int rc4 = generate_event_log_cdf(ctx, serial, date, event_type, event_file_name);
+//     if (rc4 != 0)
+//     {
+//         // return result; //rithika commented 28/04/2026
+//     }
+
+//     char output_file_name[64];
+//     char base_path[256];
+
+//     if (get_base_path(base_path, sizeof(base_path)) == 0)
+//     {
+//         snprintf(output_file_name,
+//                  sizeof(output_file_name),
+//                  "%s/data/%s_%s",
+//                  base_path,  date, serial);
+
+//     // sprintf(output_file_name, "%s%s_%s", CDF_OUTPUT_DIR, date, serial);
+//         }
+//     /* Concatenate */
+//     if (concatenate_files(output_file_name,
+//                           ls_file_name,
+//                           mn_file_name,
+//                           event_file_name,
+//                           billing_file_name) != 0)
+//         ;
+//     // return result; //rithika commented 28/04/2026
+
+//     // rithika 18Apr2026
+//     char file_rem_cmd[128];
+//     sprintf(file_rem_cmd, "rm %s", ls_file_name);
+//     system(file_rem_cmd);
+//     LOG_INFO("%s is deleted successfully", ls_file_name);
+
+//     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+//     sprintf(file_rem_cmd, "rm %s", mn_file_name);
+//     system(file_rem_cmd);
+//     LOG_INFO("%s is deleted successfully", mn_file_name);
+
+//     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+//     sprintf(file_rem_cmd, "rm \"%s\"", billing_file_name);
+//     system(file_rem_cmd);
+//     LOG_INFO("%s is deleted successfully", billing_file_name);
+
+//     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+//     sprintf(file_rem_cmd, "rm %s", event_file_name);
+//     system(file_rem_cmd);
+
+//     LOG_INFO("%s is deleted successfully", event_file_name);
+
+//     /* Zip */
+//     long zip_size = 0;
+//     if (generate_zip_file(output_file_name, &zip_size) != 0)
+//         return result;
+
+//     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+//     sprintf(file_rem_cmd, "rm %s", output_file_name);
+//     system(file_rem_cmd);
+
+//     LOG_INFO("%s is deleted successfully", output_file_name);
+
+//     /* Fill result */
+//     result.status = 0;
+//     result.filesize = zip_size;
+//     snprintf(result.filename, sizeof(result.filename), "%s.tar.gz", output_file_name);
+//     printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
+
+//     return result;
+// }
+
 cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const char *date, const char *event_type)
 {
     cdf_result_t result;
@@ -1268,7 +1378,19 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     char billing_file_name[128];
     char event_file_name[128];
 
+    struct timespec start,bill_start,bill_end,min_start,min_end,event_start,event_end,end, zip_strt, zip_end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
     int rc1 = generate_load_profile_cdf(ctx, serial, date, ls_file_name);
+   
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    long elapsed_ms =
+        (end.tv_sec - start.tv_sec) * 1000L +
+        (end.tv_nsec - start.tv_nsec) / 1000000L;
+
+    LOG_INFO("Meter %s - Time taken for load survey data: %ld ms (%.3f seconds)", serial, elapsed_ms, elapsed_ms / 1000.0);
+
     if (rc1 != 0)
     {
         // return result;  //rithika commented 28/04/2026
@@ -1284,20 +1406,50 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
     sprintf(bill_date, "%s %d", months[m], y);
-
+   
+    clock_gettime(CLOCK_MONOTONIC, &bill_start);
     int rc2 = generate_billing_cdf(ctx, serial, bill_date, billing_file_name);
+   
+    clock_gettime(CLOCK_MONOTONIC, &bill_end);
+
+    long elapsed_ms_bill =
+        (bill_end.tv_sec - bill_start.tv_sec) * 1000L +
+        (bill_end.tv_nsec - bill_start.tv_nsec) / 1000000L;
+
+    LOG_INFO("Meter %s - Time taken for billing data: %ld ms (%.3f seconds)", serial, elapsed_ms_bill, elapsed_ms_bill / 1000.0);
+
     if (rc2 != 0)
     {
         // return result; //rithika commented 28/04/2026
     }
 
+     clock_gettime(CLOCK_MONOTONIC, &min_start);
     int rc3 = generate_midnight_cdf(ctx, serial, date, mn_file_name);
+   
+     clock_gettime(CLOCK_MONOTONIC, &min_end);
+
+    long elapsed_ms_mn =
+        (min_end.tv_sec - min_start.tv_sec) * 1000L +
+        (min_end.tv_nsec - min_start.tv_nsec) / 1000000L;
+
+    LOG_INFO("Meter %s - Time taken for midnight data: %ld ms (%.3f seconds)", serial, elapsed_ms_mn, elapsed_ms_mn / 1000.0);
+
     if (rc3 != 0)
     {
         // return result; //rithika commented 28/04/2026
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &event_start);
     int rc4 = generate_event_log_cdf(ctx, serial, date, event_type, event_file_name);
+   
+      clock_gettime(CLOCK_MONOTONIC, &event_end);
+
+    long elapsed_ms_event =
+        (event_end.tv_sec - event_start.tv_sec) * 1000L +
+        (event_end.tv_nsec - event_start.tv_nsec) / 1000000L;
+ LOG_INFO("Meter %s - Time taken for event data: %ld ms (%.3f seconds)", serial, elapsed_ms_event, elapsed_ms_event / 1000.0);
+
+
     if (rc4 != 0)
     {
         // return result; //rithika commented 28/04/2026
@@ -1305,6 +1457,8 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
 
     char output_file_name[64];
     char base_path[256];
+
+     clock_gettime(CLOCK_MONOTONIC, &zip_strt);
 
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
@@ -1362,6 +1516,14 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     result.filesize = zip_size;
     snprintf(result.filename, sizeof(result.filename), "%s.tar.gz", output_file_name);
     printf("status=%d size=%ld name=%s\n", result.status, result.filesize, result.filename);
+
+    clock_gettime(CLOCK_MONOTONIC, &zip_end);
+
+    long elapsed_ms_zip =
+        (zip_end.tv_sec - zip_strt.tv_sec) * 1000L +
+        (zip_end.tv_nsec - zip_strt.tv_nsec) / 1000000L;
+
+    LOG_INFO("Meter %s - Time taken for generating zip file: %ld ms (%.3f seconds)", serial, elapsed_ms_zip, elapsed_ms_zip / 1000.0);
 
     return result;
 }

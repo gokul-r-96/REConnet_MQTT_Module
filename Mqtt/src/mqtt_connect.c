@@ -52,6 +52,11 @@ extern time_t last_secondary_try;
 time_t primary_lost_time = 0;
 time_t secondary_lost_time = 0;
 
+time_t primary_connect_start = 0;
+time_t secondary_connect_start = 0;
+
+
+
 extern time_t last_publish_inst;
 extern time_t last_publish_profile;
 extern time_t last_publish_hc;
@@ -59,26 +64,40 @@ extern time_t last_publish_modbus;
 
 pthread_mutex_t mqtt_api_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+pthread_mutex_t mqtt_publish_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t mqtt_publish_cond = PTHREAD_COND_INITIALIZER;
+volatile int mqtt_publish_done = 0;
+volatile int mqtt_publish_failed = 0;
+
 char mqtt_cmd_buffer[4096];
 volatile int mqtt_cmd_recv = 0;
 
 pthread_mutex_t cmd_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+extern volatile int mqtt_led_connected;
 
 static void on_connect_success(void *mqtt_ctx,
                                MQTTAsync_successData *resp)
 {
     mqtt_conn_t *conn = mqtt_ctx;
     conn->connected = true;
+    mqtt_led_connected = 1;
     LOG_INFO("[MQTT] Connected to %s ", conn->cfg.broker_ip);
     if (conn == &primary)
+    {
         primary_connecting = 0;
+        primary_connect_start = 0;
+    }
     else if (conn == &secondary)
+    {
         secondary_connecting = 0;
+        secondary_connect_start = 0;
+    }
 
     /* -------- PRIMARY ALWAYS PREFERRED -------- */
     if (conn == &primary)
     {
-
+        LOG_INFO("DCU Connected to Primary Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
         current_active = &primary;
         /* Reset publish scheduler after broker switch */
         /* Gokul added the below time resetting when it switches to another broker --> 14/05/2026 */
@@ -126,7 +145,7 @@ static void on_connect_success(void *mqtt_ctx,
         /* Only use secondary if primary is NOT connected */
         if (!primary.connected)
         {
-
+            LOG_INFO("DCU Connected to Secondary Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
             current_active = &secondary;
             /* Reset publish scheduler after broker switch */
             /* Gokul added the below time resetting information when it connects to new broker --> 14/05/2026 */
@@ -219,7 +238,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
     if (conn == &primary)
     {
         primary_connecting = 0;
-
+        primary_connect_start = 0;
         // last_primary_try = time(NULL);
         last_primary_try = monotonic_sec();
 
@@ -227,7 +246,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
         // primary_destroy_time = time(NULL);
         primary_destroy_time = monotonic_sec();
 
-        LOG_ERROR("[MQTT] PRIMARY FAILED");
+        LOG_ERROR("[MQTT] Primary Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
 
         primary_mqtt_conn_time = 0;
         current_active_primary = -1;
@@ -235,7 +254,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
     else if (conn == &secondary)
     {
         secondary_connecting = 0;
-
+        secondary_connect_start = 0;
         // last_secondary_try = time(NULL);
         last_secondary_try = monotonic_sec();
 
@@ -243,7 +262,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
         // secondary_destroy_time = time(NULL);
         secondary_destroy_time = monotonic_sec();
 
-        LOG_ERROR("[MQTT] SECONDARY FAILED");
+        LOG_ERROR("[MQTT] Secondary Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
 
         secn_mqtt_conn_time = 0;
         current_active_secondary = -1;
@@ -259,19 +278,44 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
     if (primary.connected || secondary.connected)
     {
         update_mqtt_status("connected");
+        mqtt_led_connected = 1;
     }
     else
     {
         update_mqtt_status("disconnected");
+        mqtt_led_connected = 0;
     }
 
     update_mqtt_time(0);
 }
 
+// void on_send_success(void *context, MQTTAsync_successData *response)
+// {
+//     unsigned char *payload = (unsigned char *)context;
+//     free(payload);
+// }
+
+
 void on_send_success(void *context, MQTTAsync_successData *response)
 {
     unsigned char *payload = (unsigned char *)context;
     free(payload);
+    pthread_mutex_lock(&mqtt_publish_mutex);
+    mqtt_publish_done = 1;
+    mqtt_publish_failed = 0;
+    pthread_cond_signal(&mqtt_publish_cond);
+    pthread_mutex_unlock(&mqtt_publish_mutex);
+}
+
+void on_send_failure(void *context, MQTTAsync_failureData *response)
+{
+    unsigned char *payload = (unsigned char *)context;
+    free(payload);
+    pthread_mutex_lock(&mqtt_publish_mutex);
+    mqtt_publish_done = 1;
+    mqtt_publish_failed = 1;
+    pthread_cond_signal(&mqtt_publish_cond);
+    pthread_mutex_unlock(&mqtt_publish_mutex);
 }
 
 // void connectionLost(void *context, char *cause)
@@ -320,7 +364,7 @@ void connectionLost(void *context, char *cause)
 {
     mqtt_conn_t *lost = (mqtt_conn_t *)context;
 
-    LOG_INFO("[MQTT] Connection lost from %s", lost->cfg.broker_ip);
+    LOG_INFO("[MQTT] Connection lost from IP => %s, Port => %d", lost->cfg.broker_ip, lost->cfg.broker_port);
 
     lost->connected = false;
 
@@ -336,10 +380,12 @@ void connectionLost(void *context, char *cause)
     if (primary.connected || secondary.connected)
     {
         update_mqtt_status("connected");
+        mqtt_led_connected = 1;
     }
     else
     {
         update_mqtt_status("disconnected");
+        mqtt_led_connected = 0;
     }
     primary_mqtt_conn_time = 0;
     secn_mqtt_conn_time = 0;
@@ -655,11 +701,88 @@ int mqtt_connect(mqtt_conn_t *conn)
     return rc;
 }
 
+// void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
+// {
+//     int rc;
+//     char pub_topic[256];
+//     FILE *fp = fopen(filename, "rb");
+//     if (!fp)
+//     {
+//         LOG_INFO("Failed to open file");
+//         return;
+//     }
+
+//     unsigned char buffer[PAYLOAD_BUFFER_SIZE];
+//     size_t bytes_read;
+
+//     while ((bytes_read = fread(buffer, 1, PAYLOAD_BUFFER_SIZE, fp)) > 0)
+//     {
+//         unsigned char *payload = malloc(bytes_read);
+//         if (!payload)
+//             break;
+
+//         memcpy(payload, buffer, bytes_read);
+
+//         MQTTAsync_message msg = MQTTAsync_message_initializer;
+//         MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
+
+//         msg.payload = payload;
+//         msg.payloadlen = bytes_read;
+//         msg.qos = mqtt_cfg->cfg.qos;
+//         msg.retained = 0;
+
+//         opts.onSuccess = on_send_success;
+//         opts.context = payload;
+
+//         if (topic_type == METER_DATA_TOPIC)
+//         {
+//             memset(pub_topic, 0, sizeof(pub_topic));
+//             snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cyclic_dlms_data_topic, dcu_ser_num);
+//             rc = MQTTAsync_sendMessage(mqtt_cfg->client,
+//                                        pub_topic,
+//                                        &msg,
+//                                        &opts);
+//         }
+//         else if (topic_type == INST_DATA_TOPIC)
+//         {
+//             memset(pub_topic, 0, sizeof(pub_topic));
+//             snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.inst_data_topic, dcu_ser_num);
+//             rc = MQTTAsync_sendMessage(mqtt_cfg->client,
+//                                        pub_topic,
+//                                        &msg,
+//                                        &opts);
+//         }
+//         else
+//         {
+//             memset(pub_topic, 0, sizeof(pub_topic));
+//             snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cmd_response_topic, dcu_ser_num);
+//             rc = MQTTAsync_sendMessage(mqtt_cfg->client,
+//                                        pub_topic,
+//                                        &msg,
+//                                        &opts);
+//         }
+
+//         if (rc != MQTTASYNC_SUCCESS)
+//         {
+//             free(payload);
+//             break;
+//         }
+//     }
+
+//     fclose(fp);
+//     if(topic_type == METER_DATA_TOPIC)
+//         LOG_INFO("[METER DATA Message] Transfer successfully completed");
+//     else if (topic_type == INST_DATA_TOPIC)
+//         LOG_INFO("[INSTANTANEOUS DATA Message] Transfer successfully completed");
+// }
+
+
 void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 {
     int rc;
     char pub_topic[256];
     FILE *fp = fopen(filename, "rb");
+
     if (!fp)
     {
         LOG_INFO("Failed to open file");
@@ -686,52 +809,142 @@ void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
         msg.retained = 0;
 
         opts.onSuccess = on_send_success;
+        opts.onFailure = on_send_failure;
         opts.context = payload;
+
+        pthread_mutex_lock(&mqtt_publish_mutex);
+        mqtt_publish_done = 0;
+        mqtt_publish_failed = 0;
+        pthread_mutex_unlock(&mqtt_publish_mutex);
 
         if (topic_type == METER_DATA_TOPIC)
         {
             memset(pub_topic, 0, sizeof(pub_topic));
             snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cyclic_dlms_data_topic, dcu_ser_num);
-            rc = MQTTAsync_sendMessage(mqtt_cfg->client,
-                                       pub_topic,
-                                       &msg,
-                                       &opts);
         }
         else if (topic_type == INST_DATA_TOPIC)
         {
             memset(pub_topic, 0, sizeof(pub_topic));
             snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.inst_data_topic, dcu_ser_num);
-            rc = MQTTAsync_sendMessage(mqtt_cfg->client,
-                                       pub_topic,
-                                       &msg,
-                                       &opts);
         }
         else
         {
             memset(pub_topic, 0, sizeof(pub_topic));
             snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cmd_response_topic, dcu_ser_num);
-            rc = MQTTAsync_sendMessage(mqtt_cfg->client,
-                                       pub_topic,
-                                       &msg,
-                                       &opts);
         }
+
+        rc = MQTTAsync_sendMessage(mqtt_cfg->client, pub_topic, &msg, &opts);
 
         if (rc != MQTTASYNC_SUCCESS)
         {
             free(payload);
+            LOG_ERROR("[MQTT] File chunk send failed, rc=%d", rc);
+            break;
+        }
+
+        pthread_mutex_lock(&mqtt_publish_mutex);
+        while (!mqtt_publish_done)
+            pthread_cond_wait(&mqtt_publish_cond, &mqtt_publish_mutex);
+
+        int publish_failed = mqtt_publish_failed;
+        pthread_mutex_unlock(&mqtt_publish_mutex);
+
+        if (publish_failed)
+        {
+            LOG_ERROR("[MQTT] File chunk publish failed");
             break;
         }
     }
 
     fclose(fp);
-    LOG_INFO("[FILE] Transfer complete");
+
+    if (topic_type == METER_DATA_TOPIC)
+        LOG_INFO("[METER DATA Message] Transfer successfully completed");
+    else if (topic_type == INST_DATA_TOPIC)
+        LOG_INFO("[INSTANTANEOUS DATA Message] Transfer successfully completed");
 }
+
+// void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
+// {
+//     int rc;
+//     char *payload = malloc(msg_size);
+//     char pub_topic[256];
+//     if (!payload)
+//     {
+//         LOG_ERROR(stderr, "Memory allocation failed");
+//         return;
+//     }
+
+//     memcpy(payload, mqtt_msg, msg_size);
+
+//     MQTTAsync_message msg = MQTTAsync_message_initializer;
+//     MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
+
+//     msg.payload = payload;
+//     msg.payloadlen = msg_size;
+//     msg.qos = mqtt_cfg->cfg.qos;
+//     msg.retained = 0;
+
+//     opts.onSuccess = on_send_success;
+//     opts.context = payload;
+
+//     if (topic_type == MODBUS_DATA_TOPIC)
+//     {
+//         memset(pub_topic, 0, sizeof(pub_topic));
+//         snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cyclic_modbus_data_topic, dcu_ser_num);
+//         rc = MQTTAsync_sendMessage(mqtt_cfg->client,
+//                                    pub_topic,
+//                                    &msg,
+//                                    &opts);
+//     }
+//     else if (topic_type == HEALTH_DATA_TOPIC)
+//     {
+//         memset(pub_topic, 0, sizeof(pub_topic));
+//         snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.health_check_data_topic, dcu_ser_num);
+
+//         rc = MQTTAsync_sendMessage(mqtt_cfg->client,
+//                                    pub_topic,
+//                                    &msg,
+//                                    &opts);
+//     }
+//     else
+//     {
+//         memset(pub_topic, 0, sizeof(pub_topic));
+//         snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cmd_response_topic, dcu_ser_num);
+//         rc = MQTTAsync_sendMessage(mqtt_cfg->client,
+//                                    pub_topic,
+//                                    &msg,
+//                                    &opts);
+//     }
+
+//     if (rc != MQTTASYNC_SUCCESS)
+//     {
+//         free(payload);
+//         LOG_ERROR(stderr, "MQTT send failed");
+//         return;
+//     }
+//     if (topic_type == MODBUS_DATA_TOPIC)
+//     {
+//         LOG_INFO("[MODBUS Message] Transfer successfully completed");
+//     }
+//     else if (topic_type == HEALTH_DATA_TOPIC)
+//     {
+//         LOG_INFO("[HEALTH CHECK Message] Transfer successfully completed");
+//     }
+//     else
+//     {
+//         LOG_INFO("[COMMAND RESPONSE Message] Transfer successfully completed");
+//     }
+
+//     update_mqtt_time(1);
+// }
 
 void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
 {
     int rc;
     char *payload = malloc(msg_size);
     char pub_topic[256];
+
     if (!payload)
     {
         LOG_ERROR(stderr, "Memory allocation failed");
@@ -749,55 +962,58 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
     msg.retained = 0;
 
     opts.onSuccess = on_send_success;
+    opts.onFailure = on_send_failure;
     opts.context = payload;
+
+    pthread_mutex_lock(&mqtt_publish_mutex);
+    mqtt_publish_done = 0;
+    mqtt_publish_failed = 0;
+    pthread_mutex_unlock(&mqtt_publish_mutex);
 
     if (topic_type == MODBUS_DATA_TOPIC)
     {
         memset(pub_topic, 0, sizeof(pub_topic));
         snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cyclic_modbus_data_topic, dcu_ser_num);
-        rc = MQTTAsync_sendMessage(mqtt_cfg->client,
-                                   pub_topic,
-                                   &msg,
-                                   &opts);
     }
     else if (topic_type == HEALTH_DATA_TOPIC)
     {
         memset(pub_topic, 0, sizeof(pub_topic));
         snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.health_check_data_topic, dcu_ser_num);
-
-        rc = MQTTAsync_sendMessage(mqtt_cfg->client,
-                                   pub_topic,
-                                   &msg,
-                                   &opts);
     }
     else
     {
         memset(pub_topic, 0, sizeof(pub_topic));
         snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cmd_response_topic, dcu_ser_num);
-        rc = MQTTAsync_sendMessage(mqtt_cfg->client,
-                                   pub_topic,
-                                   &msg,
-                                   &opts);
     }
+
+    rc = MQTTAsync_sendMessage(mqtt_cfg->client, pub_topic, &msg, &opts);
 
     if (rc != MQTTASYNC_SUCCESS)
     {
         free(payload);
-        LOG_ERROR(stderr, "MQTT send failed");
+        LOG_ERROR(stderr, "MQTT send failed, rc=%d", rc);
         return;
     }
+
+    pthread_mutex_lock(&mqtt_publish_mutex);
+    while (!mqtt_publish_done)
+        pthread_cond_wait(&mqtt_publish_cond, &mqtt_publish_mutex);
+
+    int publish_failed = mqtt_publish_failed;
+    pthread_mutex_unlock(&mqtt_publish_mutex);
+
+    if (publish_failed)
+    {
+        LOG_ERROR("[MQTT] Publish failed");
+        return;
+    }
+
     if (topic_type == MODBUS_DATA_TOPIC)
-    {
-        LOG_INFO("[MODBUS Message] Transfer completed");
-    }
+        LOG_INFO("[MODBUS Message] Transfer successfully completed");
     else if (topic_type == HEALTH_DATA_TOPIC)
-    {
-        LOG_INFO("[HEALTH CHECK Message] Transfer completed");
-    }
+        LOG_INFO("[HEALTH CHECK Message] Transfer successfully completed");
     else
-    {
-        LOG_INFO("[COMMAND RESPONSE Message] Transfer completed");
-    }
+        LOG_INFO("[COMMAND RESPONSE Message] Transfer successfully completed");
 
     update_mqtt_time(1);
 }
@@ -1435,7 +1651,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         generate_redis_list(cmd);
     }
 
-    else if (strcmp(cmd.type, "Reset") == 0 && cmd.args[0][0] != '\0')
+    else if (strcmp(cmd.type, "Reset") == 0)
     {
         msg_size = reset_resp_msg(cmd, output_msg);
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);

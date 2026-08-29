@@ -86,11 +86,16 @@ int add_process_diag(char *msg)
     if (!diag_enbl_cached)
         return 0;
 
-    redisReply *rly = redisCommand(ctx, "LPUSH %s %s", "diag_msgs:MQTT_PROC", msg);
+    // redisReply *rly = redisCommand(ctx, "LPUSH %s %s", "diag_msgs:MQTT_PROC", msg);
+
+    redisReply *rly = redisCommand(ctx,"RPUSH %s %s","diag_msgs:MQTT_PROC",msg);
+    if (!rly)
+        return -1;
+    freeReplyObject(rly);
+    rly = redisCommand(ctx,"LTRIM %s -100 -1","diag_msgs:MQTT_PROC");
 
     if (!rly)
         return -1;
-
     freeReplyObject(rly);
     return 0;
 }
@@ -134,6 +139,44 @@ void log_rotate(void)
 
     g_log_fp = fopen(g_log_path, "a");
 }
+
+
+// void log_rotate(void)
+// {
+//     struct stat st;
+
+//     if (stat(g_log_path, &st) != 0)
+//         return;
+
+//     if (st.st_size < LOG_MAX_SIZE_BYTES)
+//         return;
+
+//     if (g_log_fp)
+//     {
+//         fclose(g_log_fp);
+//         g_log_fp = NULL;
+//     }
+
+//     char bak1[512];
+//     char bak2[512];
+
+//     snprintf(bak1, sizeof(bak1),"%s/%s_bak1%s",LOG_DIR, LOG_FILE_BASE, LOG_FILE_EXT);
+
+//     snprintf(bak2, sizeof(bak2),"%s/%s_bak2%s",LOG_DIR, LOG_FILE_BASE, LOG_FILE_EXT);
+
+//     /* Delete oldest backup */
+//     remove(bak2);
+
+//     /* Move previous backup to oldest backup */
+//     rename(bak1, bak2);
+
+//     /* Move current log to backup 1 */
+//     rename(g_log_path, bak1);
+
+//     /* Create new main log */
+//     g_log_fp = fopen(g_log_path, "a");
+// }
+
 
 /**
  * @brief Initialise the logging subsystem.

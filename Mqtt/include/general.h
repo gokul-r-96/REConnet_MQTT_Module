@@ -61,8 +61,11 @@
 #define LOG_DIR                 "/usr/cms/log/"
 #define LOG_FILE_BASE           "mqtt_proc"
 #define LOG_FILE_EXT            ".log"
-#define LOG_MAX_SIZE_BYTES      (2* 1024 * 1024)   /**< Rotate at 1 MB  */
-#define LOG_MAX_FILES           2               /**< Keep 2 rotated files */
+#define LOG_MAX_SIZE_BYTES      (2* 1024 * 1024)   /**< Rotate at 2 MB  */
+// #define LOG_MAX_SIZE_BYTES (50 * 1024)  /**< Rotate at 50 KB */
+#define LOG_MAX_FILES           3               /**< Keep 2 rotated files */
+#define MQTT_CONNECT_TIMEOUT    7
+
 
 /* ---- DCU / Meter nameplate macros (D1 / GENERAL section) ---- */
 #define DCU_HASH                "dcu_info"
