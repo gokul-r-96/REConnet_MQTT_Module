@@ -22,13 +22,6 @@ extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) - fetch/parse once per
- * file generation instead of once per row/parameter. */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key, char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
-
 /* ============================================================
  *  OBIS parameter mapping
  * ============================================================ */
@@ -129,7 +122,7 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
         LOG_ERROR("meter_status entry missing for %s", field_key);
         if (r)
             freeReplyObject(r);
-        return -1;
+        return;
     }
 
     redisReply *data = r->element[1];
@@ -138,7 +131,7 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
     {
         LOG_ERROR("No matching meter_status entry for %s", field_key);
         freeReplyObject(r);
-        return -1;
+        return;
     }
 
     char *json_str = NULL;
@@ -221,23 +214,41 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
  *
  * Reads three sub-hashes from REDIS_HASH_LS_OBIS_MAP.
  *
- * @param code_root  Parsed param_code map (from fetch_obis_maps(), REDIS_HASH_LS_OBIS_MAP).
- * @param name_root  Parsed param_name map.
- * @param unit_root  Parsed param_unit map.
+ * @param ctx        Redis context.
  * @param obis       OBIS decimal string.
  * @param code_buf   Output: param code.
  * @param name_buf   Output: param name.
  * @param unit_buf   Output: param unit.
  */
-static void lookup_ls_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *unit_root,
-                                   const char *obis,
+static void lookup_ls_obis_mapping(redisContext *ctx, const char *obis,
                                    char *code_buf, size_t code_len,
                                    char *name_buf, size_t name_len,
                                    char *unit_buf, size_t unit_len)
 {
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
+    /* Default to empty strings on failure */
+    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
+
+    char *code_json = redis_hget(ctx, REDIS_HASH_LS_OBIS_MAP, REDIS_FIELD_PARAM_CODE);
+    char *name_json = redis_hget(ctx, REDIS_HASH_LS_OBIS_MAP, REDIS_FIELD_PARAM_NAME);
+    char *unit_json = redis_hget(ctx, REDIS_HASH_LS_OBIS_MAP, REDIS_FIELD_PARAM_UNIT);
+
+    if (code_json)
+    {
+        parse_obis_map(code_json, obis, code_buf, code_len);
+        free(code_json);
+    }
+
+    if (name_json)
+    {
+        parse_obis_map(name_json, obis, name_buf, name_len);
+        free(name_json);
+    }
+
+    if (unit_json)
+    {
+        parse_obis_map(unit_json, obis, unit_buf, unit_len);
+        free(unit_json);
+    }
 }
 
 /**
@@ -291,11 +302,8 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
 
     /* Query all records for the specified date, ordered by time */
     char query[512];
-    /* Match the timestamp column by prefix (LIKE 'date%') instead of wrapping it in
-     * DATE(...), which prevents SQLite from using any index on the column and forces
-     * a full table scan on every query. */
     snprintf(query, sizeof(query),
-             "SELECT * FROM %s WHERE \"0_0_1_0_0_255\" LIKE '%s%%' "
+             "SELECT * FROM %s WHERE DATE(\"0_0_1_0_0_255\") = '%s' "
              "ORDER BY \"0_0_1_0_0_255\" ASC",
              table, date);
 
@@ -324,10 +332,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     }
 
     int interval_idx = 0;
-
-    /* Fetch+parse the LS OBIS maps ONCE for this file, not once per row/parameter */
-    cJSON *code_root, *name_root, *unit_root;
-    fetch_obis_maps(ctx, REDIS_HASH_LS_OBIS_MAP, &code_root, &name_root, &unit_root);
 
     /* Iterate over result rows */
     while (sqlite3_step(stmt) == SQLITE_ROW && interval_idx < 96)
@@ -389,8 +393,8 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from the already-parsed LS map (no Redis call here) */
-            lookup_ls_obis_mapping(code_root, name_root, unit_root, obis,
+            /* Lookup mapping from LS-specific hash */
+            lookup_ls_obis_mapping(ctx, obis,
                                    p->param_code, sizeof(p->param_code),
                                    p->param_name, sizeof(p->param_name),
                                    p->unit, sizeof(p->unit));
@@ -403,8 +407,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     }
 
     day_profile->interval_count = interval_idx;
-
-    free_obis_maps(code_root, name_root, unit_root);
 
     sqlite3_finalize(stmt);
 

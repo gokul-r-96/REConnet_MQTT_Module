@@ -6,13 +6,6 @@ extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) - fetch/parse once per
- * file generation instead of once per row/parameter. */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key, char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
-
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
     {1, "Voltage events", "0_0_96_11_0_255", "0_0_99_98_0_255"},
@@ -47,23 +40,39 @@ static const EventTypeMap *get_event_type_map(int event_type)
  *
  * Reads three sub-hashes from REDIS_HASH_EVENT_OBIS_MAP.
  *
- * @param code_root  Parsed param_code map (from fetch_obis_maps(), REDIS_HASH_EVENT_OBIS_MAP).
- * @param name_root  Parsed param_name map.
- * @param unit_root  Parsed param_unit map.
+ * @param ctx        Redis context.
  * @param obis       OBIS decimal string.
  * @param code_buf   Output: param code.
  * @param name_buf   Output: param name.
  * @param unit_buf   Output: param unit.
  */
-static void lookup_event_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *unit_root,
-                                      const char *obis,
+static void lookup_event_obis_mapping(redisContext *ctx, const char *obis,
                                       char *code_buf, size_t code_len,
                                       char *name_buf, size_t name_len,
                                       char *unit_buf, size_t unit_len)
 {
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
+    /* Default to empty strings on failure */
+    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
+
+    char *code_json = redis_hget(ctx, REDIS_HASH_EVENT_OBIS_MAP, REDIS_FIELD_PARAM_CODE);
+    char *name_json = redis_hget(ctx, REDIS_HASH_EVENT_OBIS_MAP, REDIS_FIELD_PARAM_NAME);
+    char *unit_json = redis_hget(ctx, REDIS_HASH_EVENT_OBIS_MAP, REDIS_FIELD_PARAM_UNIT);
+
+    if (code_json)
+    {
+        parse_obis_map(code_json, obis, code_buf, code_len);
+        free(code_json);
+    }
+    if (name_json)
+    {
+        parse_obis_map(name_json, obis, name_buf, name_len);
+        free(name_json);
+    }
+    if (unit_json)
+    {
+        parse_obis_map(unit_json, obis, unit_buf, unit_len);
+        free(unit_json);
+    }
 }
 
 /**
@@ -128,18 +137,14 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
         struct tm *t = localtime(&now);
         char year_month[8];
         strftime(year_month, sizeof(year_month), "%Y-%m", t);
-        /* Match the timestamp column by prefix (LIKE 'year-month%') instead of
-         * wrapping it in strftime(...), which prevents SQLite from using any index
-         * on the column and forces a full table scan. */
         snprintf(where_clause, sizeof(where_clause),
-                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%'", year_month);
+                 "WHERE strftime('%%Y-%%m', \"0_0_1_0_0_255\") = '%s'", year_month);
     }
     else if (!is_date_all && is_event_type_all)
     {
-        /* All events on a specific date - prefix match instead of DATE(...) so any
-         * index on the timestamp column can still be used. */
+        /* All events on a specific date */
         snprintf(where_clause, sizeof(where_clause),
-                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%'", date);
+                 "WHERE DATE(\"0_0_1_0_0_255\") = '%s'", date);
     }
     else if (is_date_all && !is_event_type_all)
     {
@@ -149,9 +154,9 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
     else
     {
-        /* Specific event type on a specific date - prefix match instead of DATE(...) */
+        /* Specific event type on a specific date */
         snprintf(where_clause, sizeof(where_clause),
-                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%' AND event_type = '%s'",
+                 "WHERE DATE(\"0_0_1_0_0_255\") = '%s' AND event_type = '%s'",
                  date, event_type);
     }
 
@@ -194,10 +199,6 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
 
     int entry_idx = 0;
-
-    /* Fetch+parse the Event OBIS maps ONCE for this file, not once per row/parameter */
-    cJSON *code_root, *name_root, *unit_root;
-    fetch_obis_maps(ctx, REDIS_HASH_EVENT_OBIS_MAP, &code_root, &name_root, &unit_root);
 
     /* Process result rows */
     while (sqlite3_step(stmt) == SQLITE_ROW && entry_idx < 1000)
@@ -299,8 +300,8 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from the already-parsed Event map (no Redis call here) */
-            lookup_event_obis_mapping(code_root, name_root, unit_root, col_name,
+            /* Lookup mapping from Event-specific hash */
+            lookup_event_obis_mapping(ctx, col_name,
                                       p->param_code, sizeof(p->param_code),
                                       p->param_name, sizeof(p->param_name),
                                       p->unit, sizeof(p->unit));
@@ -313,8 +314,6 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
 
     event_data->entry_count = entry_idx;
-
-    free_obis_maps(code_root, name_root, unit_root);
 
     sqlite3_finalize(stmt);
 

@@ -55,6 +55,8 @@ time_t secondary_lost_time = 0;
 time_t primary_connect_start = 0;
 time_t secondary_connect_start = 0;
 
+
+
 extern time_t last_publish_inst;
 extern time_t last_publish_profile;
 extern time_t last_publish_hc;
@@ -95,7 +97,7 @@ static void on_connect_success(void *mqtt_ctx,
     /* -------- PRIMARY ALWAYS PREFERRED -------- */
     if (conn == &primary)
     {
-        LOG_INFO("DCU Connected to Primary Broker -> IP = %s and PORT = %d", conn->cfg.broker_ip, conn->cfg.broker_port);
+        LOG_INFO("DCU Connected to Primary Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
         current_active = &primary;
         /* Reset publish scheduler after broker switch */
         /* Gokul added the below time resetting when it switches to another broker --> 14/05/2026 */
@@ -143,7 +145,7 @@ static void on_connect_success(void *mqtt_ctx,
         /* Only use secondary if primary is NOT connected */
         if (!primary.connected)
         {
-            LOG_INFO("DCU Connected to Secondary Broker -> IP = %s and PORT = %d", conn->cfg.broker_ip, conn->cfg.broker_port);
+            LOG_INFO("DCU Connected to Secondary Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
             current_active = &secondary;
             /* Reset publish scheduler after broker switch */
             /* Gokul added the below time resetting information when it connects to new broker --> 14/05/2026 */
@@ -244,7 +246,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
         // primary_destroy_time = time(NULL);
         primary_destroy_time = monotonic_sec();
 
-        LOG_ERROR("[MQTT] Primary Connection failed IP => %s, Port => %d", conn->cfg.broker_ip, conn->cfg.broker_port);
+        LOG_ERROR("[MQTT] Primary Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
 
         primary_mqtt_conn_time = 0;
         current_active_primary = -1;
@@ -260,7 +262,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
         // secondary_destroy_time = time(NULL);
         secondary_destroy_time = monotonic_sec();
 
-        LOG_ERROR("[MQTT] Secondary Connection failed IP => %s, Port => %d", conn->cfg.broker_ip, conn->cfg.broker_port);
+        LOG_ERROR("[MQTT] Secondary Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
 
         secn_mqtt_conn_time = 0;
         current_active_secondary = -1;
@@ -292,6 +294,7 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 //     unsigned char *payload = (unsigned char *)context;
 //     free(payload);
 // }
+
 
 void on_send_success(void *context, MQTTAsync_successData *response)
 {
@@ -664,13 +667,13 @@ int mqtt_connect(mqtt_conn_t *conn)
     MQTTAsync_connectOptions opts =
         MQTTAsync_connectOptions_initializer;
 
-    opts.username = conn->cfg.username;
-    opts.password = conn->cfg.password;
-    opts.keepAliveInterval = conn->cfg.keep_alive;
-    opts.cleansession = conn->cfg.clean_session;
+    opts.username           =   conn->cfg.username;
+    opts.password           =   conn->cfg.password;
+    opts.keepAliveInterval  =   conn->cfg.keep_alive;
+    opts.cleansession       =   conn->cfg.clean_session;
 
-    opts.connectTimeout = 5;
-    opts.retryInterval = 0;
+    opts.connectTimeout     =   5;
+    opts.retryInterval      =   0;
 
     // opts.automaticReconnect = 1;
     // opts.minRetryInterval = 3;
@@ -772,6 +775,7 @@ int mqtt_connect(mqtt_conn_t *conn)
 //     else if (topic_type == INST_DATA_TOPIC)
 //         LOG_INFO("[INSTANTANEOUS DATA Message] Transfer successfully completed");
 // }
+
 
 void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 {
@@ -1300,19 +1304,8 @@ int generate_redis_list(cmd_request_t cmd)
         }
         else if (i == 3)
         {
-            // cJSON_AddStringToObject(root, "msgType", "OD_BILL_DATA");
-            // cJSON_AddStringToObject(data, "startdate", "current"); // 30-03-2026 format
-
-            int day, month, year;
-            char bill_date[32] = {0};
-
-            if (sscanf(cmd.args[1], "%d-%d-%d", &day, &month, &year) == 3)
-            {
-                snprintf(bill_date, sizeof(bill_date), "%d_%d", month, year);
-            }
-
             cJSON_AddStringToObject(root, "msgType", "OD_BILL_DATA");
-            cJSON_AddStringToObject(data, "startdate", bill_date); // 30-03-2026 format
+            cJSON_AddStringToObject(data, "startdate", "current"); // 30-03-2026 format
         }
 
         cJSON_AddStringToObject(root, "init_source", "mqtt");
@@ -1567,33 +1560,34 @@ int read_redis_resp(mqtt_conn_t *conn)
 //     }
 // }
 
+
 int processServerMsg(mqtt_conn_t *conn, const char *msg)
 {
     int i;
     int meter_avalb = 0;
     cmd_request_t cmd;
-
+ 
     char output_msg[PAYLOAD_BUFFER_SIZE] = {0};
     int msg_size = 0;
-
+ 
     send_hc_msg();
-
+ 
     if (parse_cmd_request(msg, &cmd) != 0)
     {
         fprintf(stderr, "Failed to parse command request\n");
         return 1;
     }
-
+ 
     LOG_INFO("TYPE        : %s", cmd.type);
     LOG_INFO("TRANSACTION : %s", cmd.transaction);
     LOG_INFO("ARG COUNT   : %u", cmd.arg_count);
-
+ 
     for (i = 0; i < cmd.arg_count; i++)
         LOG_INFO("ARG_%02u      : %s", i + 1, cmd.args[i]);
-
+ 
     if (cmd.arg_count > 1)
     {
-
+ 
         printf("------------------------------Received Meter Serial : %s\n", cmd.args[0]);
         printf("------------------------------Meter Count : %d\n", meter_count);
         printf("------------------------------Available Meter Serials:\n");
@@ -1606,7 +1600,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
                 break;
             }
         }
-
+ 
         if (meter_avalb == 0)
         {
             LOG_INFO("Meter details are invalid");
@@ -1615,7 +1609,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
             return -1;
         }
     }
-
+ 
     if (strcmp(cmd.type, "GetDay") && strcmp(cmd.type, "FetchDay") && strcmp(cmd.type, "Reset"))
     {
         LOG_INFO("Unknown cmd_type");
@@ -1623,34 +1617,34 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
         mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         return -1;
     }
-
+ 
     printf("\033[0;32m ouput msg : %s\n size %d \033[0m\n", output_msg, msg_size);
-
+ 
     if (strcmp(cmd.type, "GetDay") == 0 && cmd.args[0][0] != '\0')
     {
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
         char today_date[32];
         strftime(today_date, sizeof(today_date), "%Y-%m-%d", t);
-
+ 
         cdf_result_t res = generate_profile_cdf(ctx, cmd.args[0], today_date, "all");
         if (res.status == 0)
         {
             LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
             mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
-
+ 
             // rithika 18Apr2026
             char file_rem_cmd[128];
             sprintf(file_rem_cmd, "rm %s", res.filename);
             system(file_rem_cmd);
-
+ 
             LOG_INFO("%s is deleted successfully", res.filename);
-
+ 
             msg_size = success_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
     }
-
+ 
     else if (strcmp(cmd.type, "FetchDay") == 0 && cmd.args[0][0] != '\0')
     {
         check_redis_resp = 1;
@@ -1698,11 +1692,14 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
 //     return 1;
 // }
 
-int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
+
+
+
+int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_message *message)
 {
     pthread_mutex_lock(&cmd_mutex);
 
-    memset(mqtt_cmd_buffer, 0, sizeof(mqtt_cmd_buffer));
+    memset(mqtt_cmd_buffer,0,sizeof(mqtt_cmd_buffer));
 
     memcpy(mqtt_cmd_buffer,
            message->payload,
@@ -1712,11 +1709,13 @@ int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_m
 
     pthread_mutex_unlock(&cmd_mutex);
 
+
     MQTTAsync_freeMessage(&message);
     MQTTAsync_free(topicName);
 
     return 1;
 }
+
 
 // int update_mqtt_status(char *status)
 // {
@@ -2260,7 +2259,7 @@ int update_mqtt_time(int update_last_msg_time)
     // time_t now = time(NULL);
     time_t now = monotonic_sec();
     time_t pub_now = time(NULL);
-
+    
     char pub_time[32];
     strftime(pub_time, sizeof(pub_time), "%Y-%m-%d %H:%M:%S", localtime(&pub_now));
 
