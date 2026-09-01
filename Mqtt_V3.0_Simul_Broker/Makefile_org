@@ -1,0 +1,54 @@
+# project name (generate executable with this name)
+# TARGET   = redis_hash_generator
+TARGET   = cdf_file_gntr
+
+CC       = /home/imx6ul/Toolchain/gcc-linaro-4.9-2014.11-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf-gcc
+
+# compiling flags here
+CFLAGS   = -std=gnu99 -Wall -I.
+
+LINKER   = /home/imx6ul/Toolchain/gcc-linaro-4.9-2014.11-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf-gcc -o
+
+# linking flags here
+LFLAGS   = -L/home/imx6ul/CC/redis-bin/lib -L/home/rithika/Projects/DCU/RECONNECT/RE_connect/lib -lpthread 
+
+# change these to set the proper directories where each files should be
+
+SRCDIR   = src
+OBJDIR   = obj
+BINDIR   = bin
+INCDIR   = -Iinclude  -I/home/imx6ul/CC/redis-bin/include 
+
+SOURCES  := $(wildcard $(SRCDIR)/*.c)
+# INCLUDES := $(wildcard $(INCDIR)/*.h)
+OBJECTS  := $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
+rm       = rm -f
+
+$(BINDIR)/$(TARGET): $(OBJECTS)
+	@$(LINKER) $@ $(LFLAGS) $(OBJECTS) -lm -lhiredis -ldl -ljansson
+	@echo "Linking complete!"
+# 	cp bin/redis_hash_generator .
+	cp bin/cdf_file_gntr .
+
+# $(OBJECTS): $(OBJDIR)/%.o : $(SRCDIR)/%.c
+# 	@$(CC) $(CFLAGS) -c $< -o $@
+# 	@echo "Compiled "$<" successfully!"
+
+$(OBJECTS): $(OBJDIR)/%.o : $(SRCDIR)/%.c
+	@$(CC) $(CFLAGS) $(INCDIR) -c $< -o $@
+	@echo "Compiled "$<" successfully!"
+
+
+.PHONEY: clean
+clean:
+	@$(rm) $(OBJECTS)
+	@echo "Cleanup complete!" 
+	@echo $(OBJECTS)
+
+.PHONEY: remove
+remove: clean
+	@$(rm) $(BINDIR)/$(TARGET)
+	@echo "Executable removed!"
+
+
+
