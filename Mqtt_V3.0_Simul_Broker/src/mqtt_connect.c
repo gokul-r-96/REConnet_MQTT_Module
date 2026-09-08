@@ -6,20 +6,20 @@
 #define MQTT_1_CERTS_LOC "/usr/cms/config/mqtt_1_certs"
 #define MQTT_2_CERTS_LOC "/usr/cms/config/mqtt_2_certs"
 
-extern int certificate_path_check_primary;
-extern int certificate_path_check_secondary;
+extern int certificate_path_check_mqtt1;
+extern int certificate_path_check_mqtt2;
 extern char meter_serials[MAX_METERS][32];
 extern int meter_count;
 extern char dcu_ser_num[SIZE_32];
-extern secondary_connecting;
-extern primary_connecting;
+extern mqtt2_connecting;
+extern mqtt1_connecting;
 // rithika 02april2026
 extern redisContext *ctx;
 extern int cur_active_mqtt;
-time_t primary_mqtt_conn_time = 0;
+time_t mqtt1_mqtt_conn_time = 0;
 time_t secn_mqtt_conn_time = 0;
-int current_active_primary = -1;
-int current_active_secondary = -1;
+int current_active_mqtt1 = -1;
+int current_active_mqtt2 = -1;
 
 int ls_cmd_redis_resp = 0;
 int billing_cmd_redis_resp = 0;
@@ -37,30 +37,43 @@ char mqtt_status_value[16];
 volatile int mqtt_time_update_req = 0;
 char mqtt_time_uptime[64];
 char mqtt_time_lastmsg[32];
-int mqtt_time_active = -1; // 0=primary, 1=secondary, -1=none
+int mqtt_time_active = -1; // 0=mqtt1, 1=mqtt2, -1=none
 int mqtt_time_update_last = 0;
 
-int primary_need_destroy = 0;
-int secondary_need_destroy = 0;
+int mqtt1_need_destroy = 0;
+int mqtt2_need_destroy = 0;
 
-time_t primary_destroy_time = 0;
-time_t secondary_destroy_time = 0;
+time_t mqtt1_destroy_time = 0;
+time_t mqtt2_destroy_time = 0;
 
-extern time_t last_primary_try;
-extern time_t last_secondary_try;
+extern time_t last_mqtt1_try;
+extern time_t last_mqtt2_try;
 
-time_t primary_lost_time = 0;
-time_t secondary_lost_time = 0;
+time_t mqtt1_lost_time = 0;
+time_t mqtt2_lost_time = 0;
 
-time_t primary_connect_start = 0;
-time_t secondary_connect_start = 0;
+time_t mqtt1_connect_start = 0;
+time_t mqtt2_connect_start = 0;
 
+
+extern char mqtt1_status_hash[32];
+extern char mqtt2_status_hash[32];
 
 
 extern time_t last_publish_inst;
 extern time_t last_publish_profile;
 extern time_t last_publish_hc;
 extern time_t last_publish_modbus;
+
+extern time_t last_mqtt1_inst;
+extern time_t last_mqtt1_profile;
+extern time_t last_mqtt1_hc;
+extern time_t last_mqtt1_modbus;
+
+extern time_t last_mqtt2_inst;
+extern time_t last_mqtt2_profile;
+extern time_t last_mqtt2_hc;
+extern time_t last_mqtt2_modbus;
 
 pthread_mutex_t mqtt_api_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -72,113 +85,238 @@ volatile int mqtt_publish_failed = 0;
 char mqtt_cmd_buffer[4096];
 volatile int mqtt_cmd_recv = 0;
 
+volatile int mqtt_cmd_broker = -1;   /* 0=mqtt1, 1=mqtt2 */
+
 pthread_mutex_t cmd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 extern volatile int mqtt_led_connected;
 
-static void on_connect_success(void *mqtt_ctx,
-                               MQTTAsync_successData *resp)
+// static void on_connect_success(void *mqtt_ctx,
+//                                MQTTAsync_successData *resp)
+// {
+//     mqtt_conn_t *conn = mqtt_ctx;
+//     conn->connected = true;
+//     mqtt_led_connected = 1;
+//     LOG_INFO("[MQTT] Connected to %s ", conn->cfg.broker_ip);
+//     if (conn == &mqtt1)
+//     {
+//         mqtt1_connecting = 0;
+//         mqtt1_connect_start = 0;
+//     }
+//     else if (conn == &mqtt2)
+//     {
+//         mqtt2_connecting = 0;
+//         mqtt2_connect_start = 0;
+//     }
+
+//     /* -------- mqtt1 ALWAYS PREFERRED -------- */
+//     if (conn == &mqtt1)
+//     {
+//         LOG_INFO("DCU Connected to mqtt1 Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
+//         current_active = &mqtt1;
+//         /* Reset publish scheduler after broker switch */
+//         /* Gokul added the below time resetting when it switches to another broker --> 14/05/2026 */
+//         // last_publish_inst = time(NULL);
+//         // last_publish_profile = time(NULL);
+//         // last_publish_hc = time(NULL);
+//         // last_publish_modbus = time(NULL);
+//         last_publish_inst = monotonic_sec();
+//         last_publish_profile = monotonic_sec();
+//         last_publish_hc = monotonic_sec();
+//         last_publish_modbus = monotonic_sec();
+
+//         LOG_INFO("[SCHEDULER] Publish timers reset for mqtt1");
+
+//         mqtt_subscribe_topic(&mqtt1);
+
+//         // rithika 02April2026
+//         if (certificate_path_check_mqtt1 == 0)
+//             current_active_mqtt1 = 0;
+//         else
+//             current_active_mqtt1 = 1;
+
+//         current_active_mqtt2 = -1;
+//         // mqtt1_mqtt_conn_time = time(NULL);
+//         mqtt1_mqtt_conn_time = monotonic_sec();
+//         update_mqtt_status("connected");
+//         update_mqtt_time(0);
+
+//         /* If mqtt2 was active, disconnect it */
+//         if (mqtt2.connected)
+//         {
+//             LOG_INFO("[SWITCH] Scheduling mqtt2 disconnect");
+
+//             mqtt2.connected = false;
+
+//             mqtt2_need_destroy = 1;
+//             // mqtt2_destroy_time = time(NULL);
+//             mqtt2_destroy_time = monotonic_sec();
+//         }
+//     }
+
+//     /* -------- mqtt2 CONNECTED -------- */
+//     else if (conn == &mqtt2)
+//     {
+//         /* Only use mqtt2 if mqtt1 is NOT connected */
+//         if (!mqtt1.connected)
+//         {
+//             LOG_INFO("DCU Connected to mqtt2 Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
+//             current_active = &mqtt2;
+//             /* Reset publish scheduler after broker switch */
+//             /* Gokul added the below time resetting information when it connects to new broker --> 14/05/2026 */
+//             // last_publish_inst = time(NULL);
+//             // last_publish_profile = time(NULL);
+//             // last_publish_hc = time(NULL);
+//             // last_publish_modbus = time(NULL);
+//             last_publish_inst = monotonic_sec();
+//             last_publish_profile = monotonic_sec();
+//             last_publish_hc = monotonic_sec();
+//             last_publish_modbus = monotonic_sec();
+
+//             LOG_INFO("[SCHEDULER] Publish timers reset for mqtt2");
+
+//             mqtt_subscribe_topic(&mqtt2);
+
+//             // rithika 02April2026
+//             if (certificate_path_check_mqtt2 == 0)
+//                 current_active_mqtt2 = 0;
+//             else
+//                 current_active_mqtt2 = 1;
+
+//             current_active_mqtt1 = -1;
+//             // secn_mqtt_conn_time = time(NULL);
+//             secn_mqtt_conn_time = monotonic_sec();
+//             update_mqtt_status("connected");
+//             update_mqtt_time(0);
+//         }
+//     }
+
+//     LOG_INFO("[STATE] Active broker is now %s", current_active ? current_active->cfg.broker_ip : "NONE");
+// }
+
+
+static void on_connect_success(void *mqtt_ctx,MQTTAsync_successData *resp)
 {
-    mqtt_conn_t *conn = mqtt_ctx;
+    mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
+
+    if (conn == NULL)
+    {
+        LOG_ERROR("[MQTT] Connection success callback received NULL context");
+        return;
+    }
+
     conn->connected = true;
     mqtt_led_connected = 1;
-    LOG_INFO("[MQTT] Connected to %s ", conn->cfg.broker_ip);
-    if (conn == &primary)
+
+    LOG_INFO("[MQTT] Connected to %s, Port = %d",conn->cfg.broker_ip,conn->cfg.broker_port);
+
+    /* =========================================================
+     * mqtt1 CONNECTED
+     * ========================================================= */
+    if (conn == &mqtt1)
     {
-        primary_connecting = 0;
-        primary_connect_start = 0;
-    }
-    else if (conn == &secondary)
-    {
-        secondary_connecting = 0;
-        secondary_connect_start = 0;
-    }
+        mqtt1_connecting = 0;
+        mqtt1_connect_start = 0;
 
-    /* -------- PRIMARY ALWAYS PREFERRED -------- */
-    if (conn == &primary)
-    {
-        LOG_INFO("DCU Connected to Primary Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
-        current_active = &primary;
-        /* Reset publish scheduler after broker switch */
-        /* Gokul added the below time resetting when it switches to another broker --> 14/05/2026 */
-        // last_publish_inst = time(NULL);
-        // last_publish_profile = time(NULL);
-        // last_publish_hc = time(NULL);
-        // last_publish_modbus = time(NULL);
-        last_publish_inst = monotonic_sec();
-        last_publish_profile = monotonic_sec();
-        last_publish_hc = monotonic_sec();
-        last_publish_modbus = monotonic_sec();
+        mqtt1_mqtt_conn_time = monotonic_sec();
 
-        LOG_INFO("[SCHEDULER] Publish timers reset for PRIMARY");
+        /*
+         * Reset ONLY mqtt1 publish timers.
+         * Do not touch mqtt2 timers.
+         */
+        last_mqtt1_inst = monotonic_sec();
+        last_mqtt1_profile = monotonic_sec();
+        last_mqtt1_hc = monotonic_sec();
+        last_mqtt1_modbus = monotonic_sec();
 
-        mqtt_subscribe_topic(&primary);
+        LOG_INFO("[MQTT] mqtt1 connected");
+        LOG_INFO("[SCHEDULER] mqtt1 publish timers reset");
 
-        // rithika 02April2026
-        if (certificate_path_check_primary == 0)
-            current_active_primary = 0;
+        /*
+         * Keep mqtt1 state information.
+         */
+        if (certificate_path_check_mqtt1 == 0)
+            current_active_mqtt1 = 0;
         else
-            current_active_primary = 1;
+            current_active_mqtt1 = 1;
 
-        current_active_secondary = -1;
-        // primary_mqtt_conn_time = time(NULL);
-        primary_mqtt_conn_time = monotonic_sec();
+        /*
+         * Subscribe using mqtt1 client.
+         */
+        mqtt_subscribe_topic(&mqtt1);
+
+        /*
+         * IMPORTANT:
+         * Do NOT:
+         *     current_active = &mqtt1;
+         *     mqtt2.connected = false;
+         *     mqtt2_need_destroy = 1;
+         *     reset mqtt2 timers;
+         */
+
         update_mqtt_status("connected");
         update_mqtt_time(0);
-
-        /* If secondary was active, disconnect it */
-        if (secondary.connected)
-        {
-            LOG_INFO("[SWITCH] Scheduling secondary disconnect");
-
-            secondary.connected = false;
-
-            secondary_need_destroy = 1;
-            // secondary_destroy_time = time(NULL);
-            secondary_destroy_time = monotonic_sec();
-        }
     }
 
-    /* -------- SECONDARY CONNECTED -------- */
-    else if (conn == &secondary)
+    /* =========================================================
+     * mqtt2 CONNECTED
+     * ========================================================= */
+    else if (conn == &mqtt2)
     {
-        /* Only use secondary if primary is NOT connected */
-        if (!primary.connected)
-        {
-            LOG_INFO("DCU Connected to Secondary Broker -> IP = %s and PORT = %d",conn->cfg.broker_ip, conn->cfg.broker_port );
-            current_active = &secondary;
-            /* Reset publish scheduler after broker switch */
-            /* Gokul added the below time resetting information when it connects to new broker --> 14/05/2026 */
-            // last_publish_inst = time(NULL);
-            // last_publish_profile = time(NULL);
-            // last_publish_hc = time(NULL);
-            // last_publish_modbus = time(NULL);
-            last_publish_inst = monotonic_sec();
-            last_publish_profile = monotonic_sec();
-            last_publish_hc = monotonic_sec();
-            last_publish_modbus = monotonic_sec();
+        mqtt2_connecting = 0;
+        mqtt2_connect_start = 0;
 
-            LOG_INFO("[SCHEDULER] Publish timers reset for SECONDARY");
+        secn_mqtt_conn_time = monotonic_sec();
 
-            mqtt_subscribe_topic(&secondary);
+        /*
+         * Reset ONLY mqtt2 publish timers.
+         * Do not touch mqtt1 timers.
+         */
+        last_mqtt2_inst = monotonic_sec();
+        last_mqtt2_profile = monotonic_sec();
+        last_mqtt2_hc = monotonic_sec();
+        last_mqtt2_modbus = monotonic_sec();
 
-            // rithika 02April2026
-            if (certificate_path_check_secondary == 0)
-                current_active_secondary = 0;
-            else
-                current_active_secondary = 1;
+        LOG_INFO("[MQTT] mqtt2 connected");
+        LOG_INFO("[SCHEDULER] mqtt2 publish timers reset");
 
-            current_active_primary = -1;
-            // secn_mqtt_conn_time = time(NULL);
-            secn_mqtt_conn_time = monotonic_sec();
-            update_mqtt_status("connected");
-            update_mqtt_time(0);
-        }
+        /*
+         * Keep mqtt2 state information.
+         */
+        if (certificate_path_check_mqtt2 == 0)
+            current_active_mqtt2 = 0;
+        else
+            current_active_mqtt2 = 1;
+
+        /*
+         * Subscribe using mqtt2 client.
+         */
+        mqtt_subscribe_topic(&mqtt2);
+
+        /*
+         * IMPORTANT:
+         * Do NOT:
+         *     if (!mqtt1.connected)
+         *     current_active = &mqtt2;
+         *     mqtt1.connected = false;
+         *     reset mqtt1 timers;
+         */
+
+        update_mqtt_status("connected");
+        update_mqtt_time(0);
     }
 
-    LOG_INFO("[STATE] Active broker is now %s", current_active ? current_active->cfg.broker_ip : "NONE");
-}
+    /* =========================================================
+     * FINAL STATE
+     * ========================================================= */
 
+    LOG_INFO("[STATE] mqtt1 connected=%d connecting=%d | "
+             "mqtt2 connected=%d connecting=%d",
+             mqtt1.connected,
+             mqtt1_connecting,
+             mqtt2.connected,
+             mqtt2_connecting);
+}
 
 static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 {
@@ -189,37 +327,37 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
     LOG_INFO("[MQTT] Connection failed to %s",
              conn->cfg.broker_ip);
 
-    if (conn == &primary)
+    if (conn == &mqtt1)
     {
-        primary_connecting = 0;
-        primary_connect_start = 0;
-        // last_primary_try = time(NULL);
-        last_primary_try = monotonic_sec();
+        mqtt1_connecting = 0;
+        mqtt1_connect_start = 0;
+        // last_mqtt1_try = time(NULL);
+        last_mqtt1_try = monotonic_sec();
 
-        primary_need_destroy = 1;
-        // primary_destroy_time = time(NULL);
-        primary_destroy_time = monotonic_sec();
+        mqtt1_need_destroy = 1;
+        // mqtt1_destroy_time = time(NULL);
+        mqtt1_destroy_time = monotonic_sec();
 
-        LOG_ERROR("[MQTT] Primary Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
+        LOG_ERROR("[MQTT] mqtt1 Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
 
-        primary_mqtt_conn_time = 0;
-        current_active_primary = -1;
+        mqtt1_mqtt_conn_time = 0;
+        current_active_mqtt1 = -1;
     }
-    else if (conn == &secondary)
+    else if (conn == &mqtt2)
     {
-        secondary_connecting = 0;
-        secondary_connect_start = 0;
-        // last_secondary_try = time(NULL);
-        last_secondary_try = monotonic_sec();
+        mqtt2_connecting = 0;
+        mqtt2_connect_start = 0;
+        // last_mqtt2_try = time(NULL);
+        last_mqtt2_try = monotonic_sec();
 
-        secondary_need_destroy = 1;
-        // secondary_destroy_time = time(NULL);
-        secondary_destroy_time = monotonic_sec();
+        mqtt2_need_destroy = 1;
+        // mqtt2_destroy_time = time(NULL);
+        mqtt2_destroy_time = monotonic_sec();
 
-        LOG_ERROR("[MQTT] Secondary Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
+        LOG_ERROR("[MQTT] mqtt2 Connection failed IP => %s, Port => %d",conn->cfg.broker_ip,conn->cfg.broker_port);
 
         secn_mqtt_conn_time = 0;
-        current_active_secondary = -1;
+        current_active_mqtt2 = -1;
     }
     if (current_active == conn)
     {
@@ -227,9 +365,9 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
         cur_active_mqtt = -1;
     }
 
-    // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
-    //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
-    if (primary.connected || secondary.connected)
+    // if ((mqtt1.client && MQTTAsync_isConnected(mqtt1.client)) ||
+    //     (mqtt2.client && MQTTAsync_isConnected(mqtt2.client)))
+    if (mqtt1.connected || mqtt2.connected)
     {
         update_mqtt_status("connected");
         mqtt_led_connected = 1;
@@ -288,9 +426,9 @@ void connectionLost(void *context, char *cause)
     }
 
     // update_mqtt_status("disconnected");
-    // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
-    //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
-    if (primary.connected || secondary.connected)
+    // if ((mqtt1.client && MQTTAsync_isConnected(mqtt1.client)) ||
+    //     (mqtt2.client && MQTTAsync_isConnected(mqtt2.client)))
+    if (mqtt1.connected || mqtt2.connected)
     {
         update_mqtt_status("connected");
         mqtt_led_connected = 1;
@@ -300,47 +438,47 @@ void connectionLost(void *context, char *cause)
         update_mqtt_status("disconnected");
         mqtt_led_connected = 0;
     }
-    primary_mqtt_conn_time = 0;
+    mqtt1_mqtt_conn_time = 0;
     secn_mqtt_conn_time = 0;
 
     update_mqtt_time(0);
 
     // ONLY FLAG — NO DESTROY HERE
-    // if (lost == &primary)
+    // if (lost == &mqtt1)
     // {
-    //     primary_connecting = 0;
-    //     primary_need_destroy = 1;
-    //     primary_destroy_time = time(NULL);
+    //     mqtt1_connecting = 0;
+    //     mqtt1_need_destroy = 1;
+    //     mqtt1_destroy_time = time(NULL);
     // }
-    // else if (lost == &secondary)
+    // else if (lost == &mqtt2)
     // {
-    //     secondary_connecting = 0;
-    //     secondary_need_destroy = 1;
-    //     secondary_destroy_time = time(NULL);
+    //     mqtt2_connecting = 0;
+    //     mqtt2_need_destroy = 1;
+    //     mqtt2_destroy_time = time(NULL);
     // }
 
-    if (lost == &primary)
+    if (lost == &mqtt1)
     {
-        primary_connecting = 0;
+        mqtt1_connecting = 0;
 
-        primary_need_destroy = 1;
-        // primary_destroy_time = time(NULL);
-        primary_destroy_time = monotonic_sec();
+        mqtt1_need_destroy = 1;
+        // mqtt1_destroy_time = time(NULL);
+        mqtt1_destroy_time = monotonic_sec();
 
-        // primary_lost_time = time(NULL);
-        primary_lost_time = monotonic_sec();
+        // mqtt1_lost_time = time(NULL);
+        mqtt1_lost_time = monotonic_sec();
     }
 
-    if (lost == &secondary)
+    if (lost == &mqtt2)
     {
-        secondary_connecting = 0;
+        mqtt2_connecting = 0;
 
-        secondary_need_destroy = 1;
-        // secondary_destroy_time = time(NULL);
-        secondary_destroy_time = monotonic_sec();
+        mqtt2_need_destroy = 1;
+        // mqtt2_destroy_time = time(NULL);
+        mqtt2_destroy_time = monotonic_sec();
 
-        // secondary_lost_time = time(NULL);
-        secondary_lost_time = monotonic_sec();
+        // mqtt2_lost_time = time(NULL);
+        mqtt2_lost_time = monotonic_sec();
     }
 }
 
@@ -405,19 +543,19 @@ void connectionLost(void *context, char *cause)
 //     *ssl = (MQTTAsync_SSLOptions)MQTTAsync_SSLOptions_initializer;
 
 //     // ---- Select certificate directory ----
-//     printf("Certificate Path Check Primary Variable = %d\n", certificate_path_check_primary);
-//     printf("Certificate Path Check Secondary Variable = %d\n", certificate_path_check_secondary);
+//     printf("Certificate Path Check mqtt1 Variable = %d\n", certificate_path_check_mqtt1);
+//     printf("Certificate Path Check mqtt2 Variable = %d\n", certificate_path_check_mqtt2);
 //     printf("Variables changed!!!\n");
-//     if (cfg->primary == 1)
+//     if (cfg->mqtt1 == 1)
 //     {
-//         if (certificate_path_check_primary == 0)
+//         if (certificate_path_check_mqtt1 == 0)
 //             base_path = MQTT_1_CERTS_LOC;
 //         else
 //             base_path = MQTT_2_CERTS_LOC;
 //     }
 //     else
 //     {
-//         if (certificate_path_check_secondary == 0)
+//         if (certificate_path_check_mqtt2 == 0)
 //             base_path = MQTT_1_CERTS_LOC;
 //         else
 //             base_path = MQTT_2_CERTS_LOC;
@@ -483,19 +621,19 @@ void configure_tls(mqtt_conn_t *conn)
     *ssl = (MQTTAsync_SSLOptions)MQTTAsync_SSLOptions_initializer;
 
     // ---- Select certificate directory ----
-    printf("Certificate Path Check Primary Variable = %d\n", certificate_path_check_primary);
-    printf("Certificate Path Check Secondary Variable = %d\n", certificate_path_check_secondary);
+    printf("Certificate Path Check mqtt1 Variable = %d\n", certificate_path_check_mqtt1);
+    printf("Certificate Path Check mqtt2 Variable = %d\n", certificate_path_check_mqtt2);
     printf("Variables changed!!!\n");
-    // if (cfg->primary == 1)
+    // if (cfg->mqtt1 == 1)
     // {
-    //     if (certificate_path_check_primary == 0)
+    //     if (certificate_path_check_mqtt1 == 0)
     //         base_path = MQTT_1_CERTS_LOC;
     //     else
     //         base_path = MQTT_2_CERTS_LOC;
     // }
     // else
     // {
-    //     if (certificate_path_check_secondary == 0)
+    //     if (certificate_path_check_mqtt2 == 0)
     //         base_path = MQTT_1_CERTS_LOC;
     //     else
     //         base_path = MQTT_2_CERTS_LOC;
@@ -690,6 +828,8 @@ int mqtt_connect(mqtt_conn_t *conn)
 // }
 
 
+
+
 void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 {
     int rc;
@@ -777,6 +917,8 @@ void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
         LOG_INFO("[INSTANTANEOUS DATA Message] Transfer successfully completed");
 }
 
+
+
 // void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
 // {
 //     int rc;
@@ -851,6 +993,8 @@ void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 
 //     update_mqtt_time(1);
 // }
+
+
 
 void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
 {
@@ -931,6 +1075,7 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
     update_mqtt_time(1);
 }
 
+
 void mqtt_subscribe_topic(mqtt_conn_t *mqtt_cfg)
 {
     char sub_topic[256];
@@ -958,6 +1103,8 @@ void mqtt_subscribe_topic(mqtt_conn_t *mqtt_cfg)
     LOG_INFO("subscribed successfully\n");
 }
 
+
+
 /* -------------------------------------------------------------------------
  * Internal helpers
  * ---------------------------------------------------------------------- */
@@ -973,10 +1120,7 @@ void mqtt_subscribe_topic(mqtt_conn_t *mqtt_cfg)
  * @param  out_len  Size of output buffer.
  * @return          0 on success, -1 if attribute not found or buffer too small.
  */
-static int extract_attr(const char *restrict tag,
-                        const char *restrict attr,
-                        char *restrict out,
-                        uint32_t out_len)
+static int extract_attr(const char *restrict tag,const char *restrict attr,char *restrict out,uint32_t out_len)
 {
     char needle[CMD_TYPE_MAX_LEN];
     const char *p = NULL;
@@ -1010,8 +1154,7 @@ static int extract_attr(const char *restrict tag,
     len = (uint32_t)(end - start);
     if (len >= out_len)
     {
-        LOG_ERROR("extract_attr: value too long for attr '%s' (%u >= %u)",
-                  attr, len, out_len);
+        LOG_ERROR("extract_attr: value too long for attr '%s' (%u >= %u)", attr, len, out_len);
         return -1;
     }
 
@@ -1019,6 +1162,8 @@ static int extract_attr(const char *restrict tag,
     out[len] = '\0';
     return 0;
 }
+
+
 
 /**
  * @brief  Extract the inner text of the first occurrence of a named XML tag.
@@ -1073,6 +1218,7 @@ static int extract_tag_inner(const char *restrict xml,
     out[len] = '\0';
     return 0;
 }
+
 
 int parse_cmd_request(const char *xml, cmd_request_t *cmd)
 {
@@ -1171,6 +1317,8 @@ int parse_cmd_request(const char *xml, cmd_request_t *cmd)
     return 0;
 }
 
+
+
 int generate_redis_list(cmd_request_t cmd)
 {
     cpy_cmd = cmd;
@@ -1249,6 +1397,8 @@ int generate_redis_list(cmd_request_t cmd)
     }
 }
 
+
+
 int is_list_empty()
 {
     redisReply *rly = redisCommand(ctx, "LLEN mqtt_command_resp");
@@ -1263,6 +1413,8 @@ int is_list_empty()
 
     return is_empty;
 }
+
+
 
 int read_redis_resp(mqtt_conn_t *conn)
 {
@@ -1386,6 +1538,7 @@ int read_redis_resp(mqtt_conn_t *conn)
     }
     return 0;
 }
+
 
 // int processServerMsg(mqtt_conn_t *conn, const char *msg)
 // {
@@ -1575,6 +1728,8 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
     }
 }
 
+
+
 // int on_message_arrived(void *context,
 //                        char *topicName,
 //                        int topicLen,
@@ -1606,29 +1761,64 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
 // }
 
 
+// Gokul commented the below --> 01/09/2026
 
+// int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_message *message)
+// {
+//     pthread_mutex_lock(&cmd_mutex);
+
+//     memset(mqtt_cmd_buffer,0,sizeof(mqtt_cmd_buffer));
+
+//     memcpy(mqtt_cmd_buffer,
+//            message->payload,
+//            message->payloadlen);
+
+//     mqtt_cmd_recv = 1;
+
+//     pthread_mutex_unlock(&cmd_mutex);
+
+
+//     MQTTAsync_freeMessage(&message);
+//     MQTTAsync_free(topicName);
+
+//     return 1;
+// }
 
 int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_message *message)
 {
+    mqtt_conn_t *conn = (mqtt_conn_t *)context;
     pthread_mutex_lock(&cmd_mutex);
+    memset(mqtt_cmd_buffer, 0, sizeof(mqtt_cmd_buffer));
+    int len = message->payloadlen;
+    if (len >= sizeof(mqtt_cmd_buffer))
+        len = sizeof(mqtt_cmd_buffer) - 1;
 
-    memset(mqtt_cmd_buffer,0,sizeof(mqtt_cmd_buffer));
-
-    memcpy(mqtt_cmd_buffer,
-           message->payload,
-           message->payloadlen);
+    memcpy(mqtt_cmd_buffer, message->payload, len);
+    mqtt_cmd_buffer[len] = '\0';
+    if (conn == &mqtt1)
+    {
+        mqtt_cmd_broker = 0;
+        LOG_INFO("[MQTT RX] Message received from mqtt1");
+    }
+    else if (conn == &mqtt2)
+    {
+        mqtt_cmd_broker = 1;
+        LOG_INFO("[MQTT RX] Message received from mqtt2");
+    }
+    else
+    {
+        mqtt_cmd_broker = -1;
+        LOG_ERROR("[MQTT RX] Unknown MQTT broker");
+    }
 
     mqtt_cmd_recv = 1;
-
     pthread_mutex_unlock(&cmd_mutex);
-
 
     MQTTAsync_freeMessage(&message);
     MQTTAsync_free(topicName);
 
     return 1;
 }
-
 
 
 
@@ -1657,44 +1847,100 @@ void format_uptime(int seconds, char *out, size_t size)
 
 
 
+// int update_mqtt_time(int update_last_msg_time)
+// {
+//     // time_t now = time(NULL);
+//     time_t now = monotonic_sec();
+//     time_t pub_now = time(NULL);
+    
+//     char pub_time[32];
+//     strftime(pub_time, sizeof(pub_time), "%Y-%m-%d %H:%M:%S", localtime(&pub_now));
+
+//     int uptime = 0;
+
+//     if (current_active == &mqtt1)
+//     {
+//         uptime = now - mqtt1_mqtt_conn_time;
+
+//         format_uptime(uptime, mqtt_time_uptime, sizeof(mqtt_time_uptime));
+
+//         mqtt_time_active = 0;
+//     }
+//     else if (current_active == &mqtt2)
+//     {
+//         uptime = now - secn_mqtt_conn_time;
+
+//         format_uptime(uptime, mqtt_time_uptime, sizeof(mqtt_time_uptime));
+
+//         mqtt_time_active = 1;
+//     }
+//     else
+//     {
+//         strcpy(mqtt_time_uptime, "0s");
+//         mqtt_time_active = -1;
+//     }
+
+//     if (update_last_msg_time)
+//         strncpy(mqtt_time_lastmsg, pub_time, sizeof(mqtt_time_lastmsg));
+
+//     mqtt_time_update_last = update_last_msg_time;
+
+//     mqtt_time_update_req = 1;
+//     return 0;
+// }
+
 int update_mqtt_time(int update_last_msg_time)
 {
-    // time_t now = time(NULL);
     time_t now = monotonic_sec();
     time_t pub_now = time(NULL);
-    
     char pub_time[32];
+    char mqtt1_uptime[64] = "0s";
+    char mqtt2_uptime[64] = "0s";
+    redisReply *rly;
+
     strftime(pub_time, sizeof(pub_time), "%Y-%m-%d %H:%M:%S", localtime(&pub_now));
 
-    int uptime = 0;
-
-    if (current_active == &primary)
+    if (mqtt1.connected && mqtt1_mqtt_conn_time > 0)
     {
-        uptime = now - primary_mqtt_conn_time;
-
-        format_uptime(uptime, mqtt_time_uptime, sizeof(mqtt_time_uptime));
-
-        mqtt_time_active = 0;
+        int uptime = (int)(now - mqtt1_mqtt_conn_time);
+        if (uptime < 0) uptime = 0;
+        format_uptime(uptime, mqtt1_uptime, sizeof(mqtt1_uptime));
     }
-    else if (current_active == &secondary)
+
+    if (mqtt2.connected && secn_mqtt_conn_time > 0)
     {
-        uptime = now - secn_mqtt_conn_time;
+        int uptime = (int)(now - secn_mqtt_conn_time);
+        if (uptime < 0) uptime = 0;
+        format_uptime(uptime, mqtt2_uptime, sizeof(mqtt2_uptime));
+    }
 
-        format_uptime(uptime, mqtt_time_uptime, sizeof(mqtt_time_uptime));
-
-        mqtt_time_active = 1;
+    if (mqtt1.connected)
+    {
+        if (update_last_msg_time)
+            rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", mqtt1_status_hash, mqtt1_uptime, pub_time);
+        else
+            rly = redisCommand(ctx, "HSET %s uptime %s", mqtt1_status_hash, mqtt1_uptime);
+        if (rly) freeReplyObject(rly);
     }
     else
     {
-        strcpy(mqtt_time_uptime, "0s");
-        mqtt_time_active = -1;
+        rly = redisCommand(ctx, "HSET %s uptime 0s", mqtt1_status_hash);
+        if (rly) freeReplyObject(rly);
     }
 
-    if (update_last_msg_time)
-        strncpy(mqtt_time_lastmsg, pub_time, sizeof(mqtt_time_lastmsg));
+    if (mqtt2.connected)
+    {
+        if (update_last_msg_time)
+            rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", mqtt2_status_hash, mqtt2_uptime, pub_time);
+        else
+            rly = redisCommand(ctx, "HSET %s uptime %s", mqtt2_status_hash, mqtt2_uptime);
+        if (rly) freeReplyObject(rly);
+    }
+    else
+    {
+        rly = redisCommand(ctx, "HSET %s uptime 0s", mqtt2_status_hash);
+        if (rly) freeReplyObject(rly);
+    }
 
-    mqtt_time_update_last = update_last_msg_time;
-
-    mqtt_time_update_req = 1;
     return 0;
 }

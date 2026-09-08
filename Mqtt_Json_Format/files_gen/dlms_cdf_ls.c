@@ -22,13 +22,6 @@ extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) - fetch/parse once per
- * file generation instead of once per row/parameter. */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key, char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
-
 /* ============================================================
  *  OBIS parameter mapping
  * ============================================================ */
@@ -129,7 +122,7 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
         LOG_ERROR("meter_status entry missing for %s", field_key);
         if (r)
             freeReplyObject(r);
-        return -1;
+        return;
     }
 
     redisReply *data = r->element[1];
@@ -138,7 +131,7 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
     {
         LOG_ERROR("No matching meter_status entry for %s", field_key);
         freeReplyObject(r);
-        return -1;
+        return;
     }
 
     char *json_str = NULL;
@@ -208,8 +201,6 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
     }
 
     cJSON_Delete(root);
-    // freeReplyObject(r);
-
 
     LOG_INFO("Meter %s status: manuf=%s (key=%s) dcu=%s port=%s block_int=%d demand_int=%d",
              serial, status->manufacturer, status->manuf_key, status->dcu_serial,
@@ -223,23 +214,41 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
  *
  * Reads three sub-hashes from REDIS_HASH_LS_OBIS_MAP.
  *
- * @param code_root  Parsed param_code map (from fetch_obis_maps(), REDIS_HASH_LS_OBIS_MAP).
- * @param name_root  Parsed param_name map.
- * @param unit_root  Parsed param_unit map.
+ * @param ctx        Redis context.
  * @param obis       OBIS decimal string.
  * @param code_buf   Output: param code.
  * @param name_buf   Output: param name.
  * @param unit_buf   Output: param unit.
  */
-static void lookup_ls_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *unit_root,
-                                   const char *obis,
+static void lookup_ls_obis_mapping(redisContext *ctx, const char *obis,
                                    char *code_buf, size_t code_len,
                                    char *name_buf, size_t name_len,
                                    char *unit_buf, size_t unit_len)
 {
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
+    /* Default to empty strings on failure */
+    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
+
+    char *code_json = redis_hget(ctx, REDIS_HASH_LS_OBIS_MAP, REDIS_FIELD_PARAM_CODE);
+    char *name_json = redis_hget(ctx, REDIS_HASH_LS_OBIS_MAP, REDIS_FIELD_PARAM_NAME);
+    char *unit_json = redis_hget(ctx, REDIS_HASH_LS_OBIS_MAP, REDIS_FIELD_PARAM_UNIT);
+
+    if (code_json)
+    {
+        parse_obis_map(code_json, obis, code_buf, code_len);
+        free(code_json);
+    }
+
+    if (name_json)
+    {
+        parse_obis_map(name_json, obis, name_buf, name_len);
+        free(name_json);
+    }
+
+    if (unit_json)
+    {
+        parse_obis_map(unit_json, obis, unit_buf, unit_len);
+        free(unit_json);
+    }
 }
 
 /**
@@ -269,7 +278,9 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
 
-    if (ls_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
+    // if (ls_cmd_redis_resp == 1 && event_cmd_redis_resp == 1 && billing_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1)
+    // {
+    if (ls_cmd_redis_resp == 1 )
     {
         snprintf(table, sizeof(table), "ls_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -293,11 +304,8 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
 
     /* Query all records for the specified date, ordered by time */
     char query[512];
-    /* Match the timestamp column by prefix (LIKE 'date%') instead of wrapping it in
-     * DATE(...), which prevents SQLite from using any index on the column and forces
-     * a full table scan on every query. */
     snprintf(query, sizeof(query),
-             "SELECT * FROM %s WHERE \"0_0_1_0_0_255\" LIKE '%s%%' "
+             "SELECT * FROM %s WHERE DATE(\"0_0_1_0_0_255\") = '%s' "
              "ORDER BY \"0_0_1_0_0_255\" ASC",
              table, date);
 
@@ -326,10 +334,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     }
 
     int interval_idx = 0;
-
-    /* Fetch+parse the LS OBIS maps ONCE for this file, not once per row/parameter */
-    cJSON *code_root, *name_root, *unit_root;
-    fetch_obis_maps(ctx, REDIS_HASH_LS_OBIS_MAP, &code_root, &name_root, &unit_root);
 
     /* Iterate over result rows */
     while (sqlite3_step(stmt) == SQLITE_ROW && interval_idx < 96)
@@ -391,8 +395,8 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from the already-parsed LS map (no Redis call here) */
-            lookup_ls_obis_mapping(code_root, name_root, unit_root, obis,
+            /* Lookup mapping from LS-specific hash */
+            lookup_ls_obis_mapping(ctx, obis,
                                    p->param_code, sizeof(p->param_code),
                                    p->param_name, sizeof(p->param_name),
                                    p->unit, sizeof(p->unit));
@@ -405,8 +409,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     }
 
     day_profile->interval_count = interval_idx;
-
-    free_obis_maps(code_root, name_root, unit_root);
 
     sqlite3_finalize(stmt);
 
@@ -515,6 +517,73 @@ static void cdf_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profil
     //     cJSON_Delete(root);
 }
 
+static void json_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profile)
+{
+    (void)ctx;
+    fprintf(fp, "    \"BLOCK_PROFILE\": {\n");
+    fprintf(fp,
+            "      \"BLOCK_INTERVAL\": %d,\n",
+            profile->interval_period);
+    fprintf(fp,
+            "      \"FIELDS\": [\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
+    fprintf(fp, "      \"PARAMS\": [\n");
+    int first = 1;
+    /* Print parameter definitions only once */
+    if (profile->interval_count > 0)
+    {
+        const LSInterval *interval = &profile->intervals[0];
+        for (int j = 0; j < interval->param_count; j++)
+        {
+            const LSParam *p = &interval->params[j];
+            if (p->param_name[0] == '\0')
+                continue;
+            if (!first)
+                fprintf(fp, ",\n");
+            fprintf(fp,
+                    "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
+                    p->param_code,
+                    p->obis_hex,
+                    p->param_name,
+                    p->unit);
+
+            first = 0;
+        }
+    }
+
+    fprintf(fp, "\n");
+    fprintf(fp, "      ],\n");
+    fprintf(fp, "      \"VALUES\": [\n");
+
+    first = 1;
+    for (int i = 0; i < profile->interval_count; i++)
+    {
+        const LSInterval *interval = &profile->intervals[i];
+        if (!first)
+            fprintf(fp, ",\n");
+        fprintf(fp,
+                "        [%d,[",
+                interval->interval_num);
+
+        int first_value = 1;
+        for (int j = 0; j < interval->param_count; j++)
+        {
+            const LSParam *p = &interval->params[j];
+            if (p->param_name[0] == '\0')
+                continue;
+            if (!first_value)
+                fprintf(fp, ",");
+            fprintf(fp, "\"%s\"", p->value);
+            first_value = 0;
+        }
+        fprintf(fp, "]]");
+        first = 0;
+    }
+
+    fprintf(fp, "\n");
+    fprintf(fp, "      ]\n");
+    fprintf(fp, "    }\n");
+}
+
 /**
  * @brief Generate a CDF file for Load Survey data (data type 2).
  *
@@ -604,5 +673,71 @@ int generate_load_profile_cdf(redisContext *ctx, const char *serial, const char 
 
     LOG_INFO("Load Survey CDF written: %s", out_path);
     printf("CDF file generated: %s\n", out_path);
+    return 0;
+}
+
+int generate_load_profile_json(redisContext *ctx, const char *serial, const char *date, char *output_file)
+{
+    LOG_INFO("Generating Load Survey JSON for meter %s date %s", serial, date);
+
+    /* 1. Read meter status from Redis */
+    MeterStatus status;
+    if (read_meter_status(ctx, serial, &status) != 0)
+    {
+        LOG_ERROR("Cannot read meter status for meter %s", serial);
+        return -1;
+    }
+    /* Database path */
+    char base_path_dir[256];
+    char sqlite_db_path[256];
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    {
+        snprintf(sqlite_db_path, sizeof(sqlite_db_path), "%s/data/dcu_dlms.db", base_path_dir);
+    }
+    /* 2. Read Load Survey data */
+    LSDayProfile day_profile;
+    if (read_ls_data(sqlite_db_path, &status, serial, date, ctx, &day_profile) != 0)
+    {
+        LOG_ERROR("Cannot read LS data for meter %s date %s", serial, date);
+    }
+
+    if (day_profile.interval_count == 0)
+    {
+        LOG_WARN("No LS data found for meter %s on date %s", serial, date);
+    }
+
+    /* 3. Build output file path */
+    char dt_str[32];
+    get_datetime_str(dt_str, sizeof(dt_str));
+
+    char out_path[512];
+    char base_path[256];
+
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path, sizeof(out_path), "%s/data/LS_%s_%s.json", base_path, serial, date);
+    }
+    FILE *fp = fopen(out_path, "w");
+    if (!fp)
+    {
+        LOG_ERROR("Cannot open output file: %s (%s)", out_path, strerror(errno));
+        ls_day_profile_free(&day_profile);
+        return -1;
+    }
+
+    /* 4. Write JSON */
+    json_write_header(fp, "LS_DATA_MESSAGE");
+    json_write_general(ctx, fp, serial, dt_str);
+    json_write_d1(fp, ctx, serial);
+    json_write_d4(fp, ctx, &day_profile);
+    json_write_footer(fp);
+
+    fclose(fp);
+    ls_day_profile_free(&day_profile);
+    strcpy(output_file, out_path);
+
+    LOG_INFO("Load Survey JSON written: %s", out_path);
+    printf("JSON file generated: %s\n", out_path);
+
     return 0;
 }

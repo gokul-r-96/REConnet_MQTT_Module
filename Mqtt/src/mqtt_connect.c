@@ -224,55 +224,273 @@ static void on_connect_success(void *mqtt_ctx,
 //     // update_mqtt_time(0);
 // }
 
+
+// Gokul commented this --> 01/09/2026
+// static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
+// {
+//     mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
+
+//     conn->connected = false;
+
+//     LOG_INFO("[MQTT] Connection failed to %s",
+//              conn->cfg.broker_ip);
+
+//     if (conn == &primary)
+//     {
+//         primary_connecting = 0;
+//         primary_connect_start = 0;
+//         // last_primary_try = time(NULL);
+//         last_primary_try = monotonic_sec();
+
+//         primary_need_destroy = 1;
+//         // primary_destroy_time = time(NULL);
+//         primary_destroy_time = monotonic_sec();
+
+//         LOG_ERROR("[MQTT] Primary Connection failed IP => %s, Port => %d", conn->cfg.broker_ip, conn->cfg.broker_port);
+
+//         primary_mqtt_conn_time = 0;
+//         current_active_primary = -1;
+//     }
+//     else if (conn == &secondary)
+//     {
+//         secondary_connecting = 0;
+//         secondary_connect_start = 0;
+//         // last_secondary_try = time(NULL);
+//         last_secondary_try = monotonic_sec();
+
+//         secondary_need_destroy = 1;
+//         // secondary_destroy_time = time(NULL);
+//         secondary_destroy_time = monotonic_sec();
+
+//         LOG_ERROR("[MQTT] Secondary Connection failed IP => %s, Port => %d", conn->cfg.broker_ip, conn->cfg.broker_port);
+
+//         secn_mqtt_conn_time = 0;
+//         current_active_secondary = -1;
+//     }
+//     if (current_active == conn)
+//     {
+//         current_active = NULL;
+//         cur_active_mqtt = -1;
+//     }
+
+//     // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
+//     //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
+//     if (primary.connected || secondary.connected)
+//     {
+//         update_mqtt_status("connected");
+//         mqtt_led_connected = 1;
+//     }
+//     else
+//     {
+//         update_mqtt_status("disconnected");
+//         mqtt_led_connected = 0;
+//     }
+
+//     update_mqtt_time(0);
+// }
+
+static const char *mqtt_connack_reason_string(int reason)
+{
+    switch (reason)
+    {
+        case 0:
+            return "Connection accepted";
+
+        case 1:
+            return "Unacceptable MQTT protocol version";
+
+        case 2:
+            return "Client identifier rejected";
+
+        case 3:
+            return "MQTT broker/service unavailable";
+
+        case 4:
+            return "Bad username or password";
+
+        case 5:
+            return "Client not authorized";
+
+        default:
+            return "Unknown MQTT broker connection refusal";
+    }
+}
+
+static const char *mqtt_client_error_string(int rc)
+{
+    switch (rc)
+    {
+        case MQTTASYNC_SUCCESS:
+            return "Success";
+
+        case MQTTASYNC_FAILURE:
+            return "General MQTT client failure";
+
+        case MQTTASYNC_PERSISTENCE_ERROR:
+            return "MQTT persistence error";
+
+        case MQTTASYNC_DISCONNECTED:
+            return "MQTT client is disconnected";
+
+        case MQTTASYNC_MAX_MESSAGES_INFLIGHT:
+            return "Maximum number of in-flight messages reached";
+
+        case MQTTASYNC_BAD_UTF8_STRING:
+            return "Invalid UTF-8 string";
+
+        case MQTTASYNC_NULL_PARAMETER:
+            return "NULL parameter";
+
+        case MQTTASYNC_TOPICNAME_TRUNCATED:
+            return "MQTT topic name was truncated";
+
+        case MQTTASYNC_BAD_STRUCTURE:
+            return "Invalid MQTT structure or structure version";
+
+        case MQTTASYNC_BAD_QOS:
+            return "Invalid MQTT QoS value";
+
+        case MQTTASYNC_NO_MORE_MSGIDS:
+            return "No more MQTT message IDs available";
+
+        case MQTTASYNC_OPERATION_INCOMPLETE:
+            return "MQTT operation is incomplete";
+
+        case MQTTASYNC_MAX_BUFFERED_MESSAGES:
+            return "Maximum buffered message limit reached";
+
+        case MQTTASYNC_SSL_NOT_SUPPORTED:
+            return "SSL/TLS is not supported by this Paho library";
+
+        case MQTTASYNC_BAD_PROTOCOL:
+            return "Invalid MQTT protocol or broker URL";
+
+        case MQTTASYNC_BAD_MQTT_OPTION:
+            return "Invalid MQTT option";
+
+        case MQTTASYNC_WRONG_MQTT_VERSION:
+            return "Wrong MQTT protocol version";
+
+        default:
+            return "Unknown Paho MQTT client error";
+    }
+}
+
 static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 {
     mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
 
     conn->connected = false;
 
-    LOG_INFO("[MQTT] Connection failed to %s",
-             conn->cfg.broker_ip);
+    const char *broker_type;
 
+    if (conn == &primary)
+        broker_type = "PRIMARY";
+    else if (conn == &secondary)
+        broker_type = "SECONDARY";
+    else
+        broker_type = "UNKNOWN";
+
+    LOG_ERROR("==========================================================");
+    LOG_ERROR("[MQTT] CONNECTION FAILED");
+    LOG_ERROR("Broker Type : %s", broker_type);
+    LOG_ERROR("Broker IP   : %s", conn->cfg.broker_ip);
+    LOG_ERROR("Broker Port : %d", conn->cfg.broker_port);
+    LOG_ERROR("Client ID   : %s",
+              conn->cfg.client_id ? conn->cfg.client_id : "<NOT SET>");
+    LOG_ERROR("SSL Enabled : %d", conn->cfg.enable_ssl);
+    LOG_ERROR("Username    : %s",
+              conn->cfg.username ? conn->cfg.username : "<NOT SET>");
+    LOG_ERROR("Password    : %s",
+              conn->cfg.password ? "SET" : "NOT SET");
+
+    if (resp != NULL)
+    {
+        LOG_ERROR("Paho Error Code : %d", resp->code);
+
+        /*
+         * Paho client/library error.
+         */
+        if (resp->code < 0)
+        {
+            LOG_ERROR("Error Category : Paho MQTT Client");
+            LOG_ERROR("Error Detail   : %s",
+                      mqtt_client_error_string(resp->code));
+        }
+        else
+        {
+            /*
+             * Positive code returned by the connection failure callback.
+             * Log it, but do not blindly treat every positive Paho
+             * callback code as a CONNACK code.
+             */
+            LOG_ERROR("Error Category : MQTT Connection/Broker");
+            LOG_ERROR("Error Detail   : Connection rejected/failed");
+
+            if (resp->code <= 5)
+            {
+                LOG_ERROR("Possible MQTT Reason : %s",
+                          mqtt_connack_reason_string(resp->code));
+            }
+        }
+
+        if (resp->message != NULL)
+        {
+            LOG_ERROR("Paho Message   : %s", resp->message);
+        }
+        else
+        {
+            LOG_ERROR("Paho Message   : <NONE>");
+        }
+    }
+    else
+    {
+        LOG_ERROR("Failure Data   : <NULL>");
+        LOG_ERROR("Error Detail   : Paho did not provide failure details");
+    }
+
+    LOG_ERROR("==========================================================");
+
+    /*
+     * Existing PRIMARY handling
+     */
     if (conn == &primary)
     {
         primary_connecting = 0;
         primary_connect_start = 0;
-        // last_primary_try = time(NULL);
+
         last_primary_try = monotonic_sec();
 
         primary_need_destroy = 1;
-        // primary_destroy_time = time(NULL);
         primary_destroy_time = monotonic_sec();
-
-        LOG_ERROR("[MQTT] Primary Connection failed IP => %s, Port => %d", conn->cfg.broker_ip, conn->cfg.broker_port);
 
         primary_mqtt_conn_time = 0;
         current_active_primary = -1;
     }
+
+    /*
+     * Existing SECONDARY handling
+     */
     else if (conn == &secondary)
     {
         secondary_connecting = 0;
         secondary_connect_start = 0;
-        // last_secondary_try = time(NULL);
+
         last_secondary_try = monotonic_sec();
 
         secondary_need_destroy = 1;
-        // secondary_destroy_time = time(NULL);
         secondary_destroy_time = monotonic_sec();
-
-        LOG_ERROR("[MQTT] Secondary Connection failed IP => %s, Port => %d", conn->cfg.broker_ip, conn->cfg.broker_port);
 
         secn_mqtt_conn_time = 0;
         current_active_secondary = -1;
     }
+
     if (current_active == conn)
     {
         current_active = NULL;
         cur_active_mqtt = -1;
     }
 
-    // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
-    //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
     if (primary.connected || secondary.connected)
     {
         update_mqtt_status("connected");
@@ -286,6 +504,8 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 
     update_mqtt_time(0);
 }
+
+
 
 // void on_send_success(void *context, MQTTAsync_successData *response)
 // {
@@ -357,11 +577,105 @@ void on_send_failure(void *context, MQTTAsync_failureData *response)
 //     // }
 // }
 
+
+// Gokul commented this --> 01/09/2026
+// void connectionLost(void *context, char *cause)
+// {
+//     mqtt_conn_t *lost = (mqtt_conn_t *)context;
+
+//     LOG_INFO("[MQTT] Connection lost from IP => %s, Port => %d", lost->cfg.broker_ip, lost->cfg.broker_port);
+
+//     lost->connected = false;
+
+//     if (current_active == lost)
+//     {
+//         current_active = NULL;
+//         cur_active_mqtt = -1;
+//     }
+
+//     // update_mqtt_status("disconnected");
+//     // if ((primary.client && MQTTAsync_isConnected(primary.client)) ||
+//     //     (secondary.client && MQTTAsync_isConnected(secondary.client)))
+//     if (primary.connected || secondary.connected)
+//     {
+//         update_mqtt_status("connected");
+//         mqtt_led_connected = 1;
+//     }
+//     else
+//     {
+//         update_mqtt_status("disconnected");
+//         mqtt_led_connected = 0;
+//     }
+//     primary_mqtt_conn_time = 0;
+//     secn_mqtt_conn_time = 0;
+
+//     update_mqtt_time(0);
+
+//     // ONLY FLAG — NO DESTROY HERE
+//     // if (lost == &primary)
+//     // {
+//     //     primary_connecting = 0;
+//     //     primary_need_destroy = 1;
+//     //     primary_destroy_time = time(NULL);
+//     // }
+//     // else if (lost == &secondary)
+//     // {
+//     //     secondary_connecting = 0;
+//     //     secondary_need_destroy = 1;
+//     //     secondary_destroy_time = time(NULL);
+//     // }
+
+//     if (lost == &primary)
+//     {
+//         primary_connecting = 0;
+
+//         primary_need_destroy = 1;
+//         // primary_destroy_time = time(NULL);
+//         primary_destroy_time = monotonic_sec();
+
+//         // primary_lost_time = time(NULL);
+//         primary_lost_time = monotonic_sec();
+//     }
+
+//     if (lost == &secondary)
+//     {
+//         secondary_connecting = 0;
+
+//         secondary_need_destroy = 1;
+//         // secondary_destroy_time = time(NULL);
+//         secondary_destroy_time = monotonic_sec();
+
+//         // secondary_lost_time = time(NULL);
+//         secondary_lost_time = monotonic_sec();
+//     }
+// }
+
+
 void connectionLost(void *context, char *cause)
 {
     mqtt_conn_t *lost = (mqtt_conn_t *)context;
 
-    LOG_INFO("[MQTT] Connection lost from IP => %s, Port => %d", lost->cfg.broker_ip, lost->cfg.broker_port);
+    const char *broker_type;
+
+    if (lost == &primary)
+        broker_type = "PRIMARY";
+    else if (lost == &secondary)
+        broker_type = "SECONDARY";
+    else
+        broker_type = "UNKNOWN";
+
+    LOG_ERROR("==========================================================");
+    LOG_ERROR("[MQTT] CONNECTION LOST");
+    LOG_ERROR("Broker Type : %s", broker_type);
+    LOG_ERROR("Broker IP   : %s", lost->cfg.broker_ip);
+    LOG_ERROR("Broker Port : %d", lost->cfg.broker_port);
+
+    if (cause != NULL)
+        LOG_ERROR("Disconnect Cause : %s", cause);
+    else
+        LOG_ERROR("Disconnect Cause : <NOT PROVIDED>");
+
+    LOG_ERROR("==========================================================");
 
     lost->connected = false;
 
@@ -406,11 +720,9 @@ void connectionLost(void *context, char *cause)
     if (lost == &primary)
     {
         primary_connecting = 0;
-
         primary_need_destroy = 1;
         // primary_destroy_time = time(NULL);
         primary_destroy_time = monotonic_sec();
-
         // primary_lost_time = time(NULL);
         primary_lost_time = monotonic_sec();
     }
@@ -418,15 +730,14 @@ void connectionLost(void *context, char *cause)
     if (lost == &secondary)
     {
         secondary_connecting = 0;
-
         secondary_need_destroy = 1;
         // secondary_destroy_time = time(NULL);
         secondary_destroy_time = monotonic_sec();
-
         // secondary_lost_time = time(NULL);
         secondary_lost_time = monotonic_sec();
     }
 }
+
 
 /**
  * configure_tls()
@@ -631,6 +942,75 @@ void configure_tls(mqtt_conn_t *conn)
     LOG_INFO("[TLS] TLS Version     : TLS 1.2");
 }
 
+
+// Gokul commented this --> 01/09/2026
+// int mqtt_connect(mqtt_conn_t *conn)
+// {
+//     char url[256];
+
+//     snprintf(url, sizeof(url), "%s://%s:%d",
+//              conn->cfg.enable_ssl ? "ssl" : "tcp",
+//              conn->cfg.broker_ip,
+//              conn->cfg.broker_port);
+//     LOG_INFO("URL CONNECTION ---> %s", url);
+//     /* Create client only once */
+//     // if (conn->client && conn->connected == false)
+//     // {
+//     //     MQTTAsync_destroy(&conn->client);
+//     //     conn->client = NULL;
+//     // }
+//     if (conn->client == NULL)
+//     {
+//         MQTTAsync_create(&conn->client,
+//                          url,
+//                          conn->cfg.client_id,
+//                          MQTTCLIENT_PERSISTENCE_NONE,
+//                          NULL);
+
+//         MQTTAsync_setCallbacks(conn->client,
+//                                conn,
+//                                connectionLost,
+//                                on_message_arrived,
+//                                NULL);
+//     }
+
+//     MQTTAsync_connectOptions opts =
+//         MQTTAsync_connectOptions_initializer;
+
+//     opts.username = conn->cfg.username;
+//     opts.password = conn->cfg.password;
+//     opts.keepAliveInterval = conn->cfg.keep_alive;
+//     opts.cleansession = conn->cfg.clean_session;
+
+//     opts.connectTimeout = 5;
+//     opts.retryInterval = 0;
+
+//     // opts.automaticReconnect = 1;
+//     // opts.minRetryInterval = 3;
+//     // opts.maxRetryInterval = 10;
+
+//     opts.onSuccess = on_connect_success;
+//     opts.onFailure = on_connect_failure;
+//     opts.context = conn;
+
+//     if (conn->cfg.enable_ssl)
+//     {
+//         configure_tls(conn);
+//         opts.ssl = &conn->ssl_opts;
+//     }
+
+//     conn->connected = false;
+
+//     // return MQTTAsync_connect(conn->client, &opts);
+//     pthread_mutex_lock(&mqtt_api_mutex);
+
+//     int rc = MQTTAsync_connect(conn->client, &opts);
+
+//     pthread_mutex_unlock(&mqtt_api_mutex);
+
+//     return rc;
+// }
+
 int mqtt_connect(mqtt_conn_t *conn)
 {
     char url[256];
@@ -639,20 +1019,36 @@ int mqtt_connect(mqtt_conn_t *conn)
              conn->cfg.enable_ssl ? "ssl" : "tcp",
              conn->cfg.broker_ip,
              conn->cfg.broker_port);
-    LOG_INFO("URL CONNECTION ---> %s", url);
-    /* Create client only once */
-    // if (conn->client && conn->connected == false)
-    // {
-    //     MQTTAsync_destroy(&conn->client);
-    //     conn->client = NULL;
-    // }
+
+    LOG_INFO("[MQTT] Connection URL : %s", url);
+    LOG_INFO("[MQTT] Client ID       : %s",
+             conn->cfg.client_id ? conn->cfg.client_id : "<NOT SET>");
+    LOG_INFO("[MQTT] SSL Enabled     : %d", conn->cfg.enable_ssl);
+    LOG_INFO("[MQTT] Username        : %s",
+             conn->cfg.username ? conn->cfg.username : "<NOT SET>");
+    LOG_INFO("[MQTT] Password        : %s",
+             conn->cfg.password ? "SET" : "NOT SET");
+
+    /*
+     * Create MQTT client
+     */
     if (conn->client == NULL)
     {
-        MQTTAsync_create(&conn->client,
-                         url,
-                         conn->cfg.client_id,
-                         MQTTCLIENT_PERSISTENCE_NONE,
-                         NULL);
+        int rc = MQTTAsync_create(&conn->client,
+                                  url,
+                                  conn->cfg.client_id,
+                                  MQTTCLIENT_PERSISTENCE_NONE,
+                                  NULL);
+
+        if (rc != MQTTASYNC_SUCCESS)
+        {
+            LOG_ERROR("[MQTT] MQTTAsync_create() failed");
+            LOG_ERROR("[MQTT] Return Code : %d", rc);
+            LOG_ERROR("[MQTT] Error Detail : %s",
+                      mqtt_client_error_string(rc));
+
+            return rc;
+        }
 
         MQTTAsync_setCallbacks(conn->client,
                                conn,
@@ -672,14 +1068,13 @@ int mqtt_connect(mqtt_conn_t *conn)
     opts.connectTimeout = 5;
     opts.retryInterval = 0;
 
-    // opts.automaticReconnect = 1;
-    // opts.minRetryInterval = 3;
-    // opts.maxRetryInterval = 10;
-
     opts.onSuccess = on_connect_success;
     opts.onFailure = on_connect_failure;
     opts.context = conn;
 
+    /*
+     * Configure TLS if enabled.
+     */
     if (conn->cfg.enable_ssl)
     {
         configure_tls(conn);
@@ -688,15 +1083,38 @@ int mqtt_connect(mqtt_conn_t *conn)
 
     conn->connected = false;
 
-    // return MQTTAsync_connect(conn->client, &opts);
     pthread_mutex_lock(&mqtt_api_mutex);
 
     int rc = MQTTAsync_connect(conn->client, &opts);
 
     pthread_mutex_unlock(&mqtt_api_mutex);
 
+    /*
+     * This is an immediate Paho API failure.
+     * Broker authentication/CONNACK failures normally arrive
+     * asynchronously through on_connect_failure().
+     */
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        LOG_ERROR("==========================================================");
+        LOG_ERROR("[MQTT] CONNECT REQUEST FAILED");
+        LOG_ERROR("Broker IP   : %s", conn->cfg.broker_ip);
+        LOG_ERROR("Broker Port : %d", conn->cfg.broker_port);
+        LOG_ERROR("Return Code : %d", rc);
+        LOG_ERROR("Error Detail: %s",
+                  mqtt_client_error_string(rc));
+        LOG_ERROR("==========================================================");
+    }
+    else
+    {
+        LOG_INFO("[MQTT] Connect request submitted successfully");
+        LOG_INFO("[MQTT] Waiting for broker response...");
+    }
+
     return rc;
 }
+
+
 
 // void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 // {
@@ -1329,7 +1747,8 @@ int generate_redis_list(cmd_request_t cmd)
         if (reply == NULL)
         {
             fprintf(stderr, "Redis command failed\n");
-
+            cJSON_Delete(root);
+            free(json_str);
             return -1;
         }
         else

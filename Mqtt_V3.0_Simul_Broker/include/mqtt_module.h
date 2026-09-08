@@ -71,14 +71,14 @@ typedef struct {
 
 /* ================= Global Objects ================= */
 
-extern mqtt_conn_t primary;
-extern mqtt_conn_t secondary;
+extern mqtt_conn_t mqtt1;
+extern mqtt_conn_t mqtt2;
 extern mqtt_conn_t *current_active;
 /* ================= Public APIs ================= */
 
 void mqtt_module_start(void);
 int  mqtt_connect(mqtt_conn_t *conn);
-bool try_primary_health_check(mqtt_conn_t *primary);
+bool try_mqtt1_health_check(mqtt_conn_t *mqtt1);
 void *mqtt_worker_thread(void *arg);
 void load_mqtt_cfg(const char *hash, mqtt_cfg_t *cfg);
 void configure_tls(mqtt_conn_t *conn);

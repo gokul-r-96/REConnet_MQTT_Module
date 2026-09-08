@@ -361,7 +361,7 @@ typedef struct {
 //     char password[MAX_STR_LEN];
 //     int  keep_alive;
 //     int  qos;
-//     int  primary;
+//     int  mqtt1;
 
 //     // Topics (publish)
 //     char per_data_topic[MAX_TOPIC_LEN];
@@ -410,7 +410,7 @@ typedef struct
     char password[MAX_STR_LEN];
     int  keep_alive;
     int  qos;
-    int  primary;
+    int  mqtt1;
     int  clean_session;
     int  insecure;
 
@@ -464,8 +464,8 @@ typedef struct {
 
 
 /*extern variables declaration*/
-extern mqtt_conn_t primary;
-extern mqtt_conn_t secondary;
+extern mqtt_conn_t mqtt1;
+extern mqtt_conn_t mqtt2;
 extern mqtt_conn_t *current_active;
 extern redisContext *ctx;
 /*extern variable declaration is done here*/
@@ -500,7 +500,7 @@ int build_health_status_xml(redisContext *ctx, char *out_buf, size_t out_sz, int
 
 void mqtt_module_start();
 int  mqtt_connect(mqtt_conn_t *conn);
-bool try_primary_health_check(mqtt_conn_t *primary);
+bool try_mqtt1_health_check(mqtt_conn_t *mqtt1);
 void *mqtt_worker_thread(void *arg);
 void load_mqtt_cfg(const char *hash, mqtt_cfg_t *cfg);
 void configure_tls(mqtt_conn_t *conn);

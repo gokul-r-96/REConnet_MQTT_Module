@@ -24,6 +24,12 @@ time_t secn_mqtt_conn_time;
 int cur_active_mqtt = -1;
 char dcu_ser_num[SIZE_32];
 
+
+//Gokul added the variables for the mqtt cloud status led updation --> 04/09/2026
+
+#define MQTT_LED_GPIO 87
+volatile int mqtt_led_connected = 0;
+
 extern int check_redis_resp;
 /*Gokul added the below variables for mqtt connecting --> 02/05/2026 */
 int primary_connecting = 0;
@@ -37,9 +43,12 @@ time_t last_publish_profile = 0;
 time_t last_publish_hc = 0;
 time_t last_publish_modbus = 0;
 
+extern time_t primary_connect_start;
+extern time_t secondary_connect_start;
 
-#define PRIMARY_RETRY_SEC 15
-#define SECONDARY_RETRY_SEC 15
+
+#define PRIMARY_RETRY_SEC 18
+#define SECONDARY_RETRY_SEC 27
 
 extern volatile int mqtt_status_update_req;
 extern char mqtt_status_value[16];
@@ -164,6 +173,42 @@ int get_active_broker()
     return -1; // NONE
 }
 
+static void mqtt_led_set(int value)
+{
+    FILE *fp = fopen("/sys/class/gpio/gpio87/value", "w");
+    if (!fp)
+        return;
+
+    fprintf(fp, "%d", value);
+    fclose(fp);
+}
+
+static int mqtt_led_init(void)
+{
+    FILE *fp;
+
+    if (access("/sys/class/gpio/gpio87", F_OK) != 0)
+    {
+        fp = fopen("/sys/class/gpio/export", "w");
+        if (!fp)
+            return -1;
+
+        fprintf(fp, "%d", MQTT_LED_GPIO);
+        fclose(fp);
+        usleep(100000);
+    }
+
+    fp = fopen("/sys/class/gpio/gpio87/direction", "w");
+    if (!fp)
+        return -1;
+
+    fprintf(fp, "out");
+    fclose(fp);
+
+    mqtt_led_set(0);
+    return 0;
+}
+
 void *mqtt_worker_thread(void *arg)
 {
     char file_rem_cmd[128];
@@ -183,6 +228,32 @@ void *mqtt_worker_thread(void *arg)
         send_hc_msg();
         // time_t now = time(NULL);
         time_t now = monotonic_sec();
+
+        
+        if (primary_connecting && primary_connect_start > 0 && (now - primary_connect_start >= MQTT_CONNECT_TIMEOUT))
+        {
+            LOG_ERROR("[WATCHDOG] PRIMARY connection timeout");
+            primary_connecting = 0;
+            primary_connect_start = 0;
+            if (primary.client)
+            {
+                primary_need_destroy = 1;
+                primary_destroy_time = now;
+            }
+        }
+
+        if (secondary_connecting && secondary_connect_start > 0 && (now - secondary_connect_start >= MQTT_CONNECT_TIMEOUT))
+        {
+            LOG_ERROR("[WATCHDOG] SECONDARY connection timeout");
+            secondary_connecting = 0;
+            secondary_connect_start = 0;
+            if (secondary.client)
+            {
+                secondary_need_destroy = 1;
+                secondary_destroy_time = now;
+            }
+        }
+
         // rithika 16April2026
         if ((now - last_nw_logger_check) >= NW_LOGGER_CHECK)
         {
@@ -234,42 +305,42 @@ void *mqtt_worker_thread(void *arg)
             cur_active_mqtt =
                 (certificate_path_check_secondary == 0) ? 1 : 2;
 
-            /* Retry primary periodically */
-            if ((now - last_primary_retry) >= PRI_BROKER_RECONNECT_PERIOD)
-            {
-                last_primary_retry = now;
+            // /* Retry primary periodically */
+            // if ((now - last_primary_retry) >= PRI_BROKER_RECONNECT_PERIOD)
+            // {
+            //     last_primary_retry = now;
 
-                LOG_INFO("[FAILBACK] Checking primary broker");
+            //     LOG_INFO("[FAILBACK] Checking primary broker");
 
-                /* clear stale connecting state */
-                if (primary_connecting)
-                {
-                    if (!primary.connected)
-                    {
-                        LOG_INFO("[FAILBACK] Clearing stale primary state");
+            //     /* clear stale connecting state */
+            //     if (primary_connecting)
+            //     {
+            //         if (!primary.connected)
+            //         {
+            //             LOG_INFO("[FAILBACK] Clearing stale primary state");
 
-                        primary_connecting = 0;
+            //             primary_connecting = 0;
 
-                        if (primary.client)
-                        {
-                            primary_need_destroy = 1;
-                            // primary_destroy_time = time(NULL);
-                            primary_destroy_time = monotonic_sec();
-                        }
-                    }
-                }
+            //             if (primary.client)
+            //             {
+            //                 primary_need_destroy = 1;
+            //                 // primary_destroy_time = time(NULL);
+            //                 primary_destroy_time = monotonic_sec();
+            //             }
+            //         }
+            //     }
 
-                /* retry primary */
-                if (!primary_connecting &&
-                    primary.cfg.enable_mqtt)
-                {
-                    LOG_INFO("[FAILBACK] Trying primary broker");
+            //     /* retry primary */
+            //     if (!primary_connecting &&
+            //         primary.cfg.enable_mqtt)
+            //     {
+            //         LOG_INFO("[FAILBACK] Trying primary broker");
 
-                    primary_connecting = 1;
+            //         primary_connecting = 1;
 
-                    mqtt_connect(&primary);
-                }
-            }
+            //         mqtt_connect(&primary);
+            //     }
+            // }
         }
 
         // /* ---------- NO BROKER CONNECTED ---------- */
@@ -328,42 +399,56 @@ void *mqtt_worker_thread(void *arg)
             current_active = NULL;
             cur_active_mqtt = -1;
 
-            /* Try PRIMARY first */
-            if (primary.cfg.enable_mqtt)
+            printf("Primary Connected = %d\n", primary.connected);
+            printf("Primary Connecting = %d\n", primary_connecting);
+            printf("Secondary Connected = %d\n", secondary.connected);
+            printf("Secondary Connecting = %d\n", secondary_connecting);
+
+            /*
+            * PRIMARY
+            */
+            if (primary.cfg.enable_mqtt &&!primary_connecting &&!secondary_connecting && (now - last_primary_try >= PRIMARY_RETRY_SEC))
             {
-                if ((!primary.connected && !primary_connecting) &&
-                    (now - last_primary_try >= PRIMARY_RETRY_SEC))
+                LOG_INFO("[RECONNECT] Trying PRIMARY");
+
+                primary_connecting = 1;
+                primary_connect_start = now;
+                last_primary_try = now;
+                int rc = mqtt_connect(&primary);
+                if (rc != MQTTASYNC_SUCCESS)
                 {
-                    LOG_INFO("[RECONNECT] Trying PRIMARY");
-
-                    primary_connecting = 1;
-                    last_primary_try = now;
-
-                    mqtt_connect(&primary);
-
-                    /* do not try secondary immediately */
-                    goto mqtt_loop_end;
+                    LOG_ERROR("[MQTT] PRIMARY connect start failed, rc=%d", rc);
+                    primary_connecting = 0;
+                    primary_connect_start = 0;
+                    primary_need_destroy = 1;
+                    primary_destroy_time = now;
                 }
             }
 
-            /* Try SECONDARY only if primary not connecting */
-            if (secondary.cfg.enable_mqtt)
+            /*
+            * SECONDARY
+            *
+            * Only try if PRIMARY is NOT connecting.
+            */
+            if (!primary_connecting && !secondary_connecting && secondary.cfg.enable_mqtt && (now - last_secondary_try >= SECONDARY_RETRY_SEC))
             {
-                if (!primary_connecting)
+                LOG_INFO("[FAILOVER] Trying SECONDARY");
+                secondary_connecting = 1;
+                secondary_connect_start = now;
+                last_secondary_try = now;
+                int rc = mqtt_connect(&secondary);
+                if (rc != MQTTASYNC_SUCCESS)
                 {
-                    if ((!secondary.connected && !secondary_connecting) &&
-                        (now - last_secondary_try >= SECONDARY_RETRY_SEC))
-                    {
-                        LOG_INFO("[FAILOVER] Trying SECONDARY");
-
-                        secondary_connecting = 1;
-                        last_secondary_try = now;
-
-                        mqtt_connect(&secondary);
-                    }
+                    LOG_ERROR("[MQTT] SECONDARY connect start failed, rc=%d", rc);
+                    secondary_connecting = 0;
+                    secondary_connect_start = 0;
+                    secondary_need_destroy = 1;
+                    secondary_destroy_time = now;
                 }
             }
         }
+
+
         if (primary_need_destroy)
         {
             // if ((time(NULL) - primary_destroy_time) >= 2)
@@ -403,36 +488,33 @@ void *mqtt_worker_thread(void *arg)
             }
         }
         // ///////////////////////////
+        
         printf("check_redis_resp %d\n\n", check_redis_resp);
 
-        if (check_redis_resp == 1)
+        if (check_redis_resp == 1 && current_active && current_active->connected)
         {
             read_redis_resp(current_active);
         }
-
         /* Publish */
-        // interval_sec = current_active->cfg.dlms_inst_pub_interval * 60;
-        // elapsed = now - last_publish_inst;
-        // remaining = interval_sec - elapsed;
-        // if (remaining > 0)
-        // {
-        //     LOG_INFO("Instataneous Data will publish in %d minutes", remaining / 60);
-        // }
-        if (current_active && (now - last_publish_inst >= current_active->cfg.dlms_inst_pub_interval * 60))
+        if (current_active && current_active->connected && current_active->client && (now - last_publish_inst >= current_active->cfg.dlms_inst_pub_interval * 60))
         {
+            mqtt_conn_t *publish_conn = current_active;
             last_publish_inst = now;
             load_active_meters(ctx);
-
             for (int i = 0; i < meter_count; i++)
             {
                 const char *serial = meter_serials[i];
-                // cdf_result_t res = generate_instantaneous_cdf(ctx, serial);
                 cdf_result_t res = generate_instantaneous_json(ctx, serial);
-
                 if (res.status == 0)
                 {
-                    mqtt_send_file(current_active, res.filename, INST_DATA_TOPIC);
-                    // rithika 18Apr2026
+                    if (publish_conn->connected && publish_conn->client)
+                    {
+                        mqtt_send_file(publish_conn,res.filename,INST_DATA_TOPIC);
+                    }
+                    else
+                    {
+                        LOG_INFO("[MQTT] Instantaneous publish skipped - broker disconnected");
+                    }
                     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
                     sprintf(file_rem_cmd, "rm %s", res.filename);
                     system(file_rem_cmd);
@@ -441,133 +523,223 @@ void *mqtt_worker_thread(void *arg)
             }
         }
 
-        if (check_redis_resp == 1)
+        if (check_redis_resp == 1 && current_active && current_active->connected)
         {
             read_redis_resp(current_active);
         }
 
-        // interval_sec = current_active->cfg.dlms_data_pub_interval * 60;
-        // elapsed = now - last_publish_profile;
-        // remaining = interval_sec - elapsed;
-        // if (remaining > 0)
-        // {
-        //     LOG_INFO("Meter Profile Data will publish in %d minutes", remaining / 60);
-        // }
-        if (current_active && (now - last_publish_profile >= current_active->cfg.dlms_data_pub_interval * 60))
+        /* Meter Profile */
+        if (current_active && current_active->connected && current_active->client && (now - last_publish_profile >=
+            current_active->cfg.dlms_data_pub_interval * 60))
         {
+            mqtt_conn_t *publish_conn = current_active;
             last_publish_profile = now;
             time_t t = time(NULL);
             struct tm *tm_det = localtime(&t);
             char today_date[16];
-            strftime(today_date, sizeof(today_date), "%Y-%m-%d", tm_det);
+            strftime(today_date, sizeof(today_date),"%Y-%m-%d", tm_det);
             for (int i = 0; i < meter_count; i++)
             {
+                struct timespec start, mid_start , end,mid_end,dead_end;
+                clock_gettime(CLOCK_MONOTONIC, &start);
                 const char *serial = meter_serials[i];
-                // cdf_result_t res = generate_profile_cdf(ctx, serial, today_date, "all");
-                cdf_result_t res = generate_profile_json(ctx, serial, today_date, "all");
+                cdf_result_t res = generate_profile_json(ctx, serial,today_date, "all");
+                clock_gettime(CLOCK_MONOTONIC, &end);
+                long elapsed_ms =
+                    (end.tv_sec - start.tv_sec) * 1000L +
+                    (end.tv_nsec - start.tv_nsec) / 1000000L;
+
+                LOG_INFO("Meter %s - Time taken for file generation alone : %ld ms (%.3f seconds)",
+                        serial, elapsed_ms, elapsed_ms / 1000.0);
                 if (res.status == 0)
                 {
-                    LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
-                    // LOG_INFO("Meter Profile Generated Successfully");
-                    mqtt_send_file(current_active, res.filename, METER_DATA_TOPIC);
-                    // rithika 18Apr2026
+                    LOG_INFO("Meter Profile Generated Successfully: %s",res.filename);
+                    clock_gettime(CLOCK_MONOTONIC, &mid_start);
+                    if (publish_conn->connected && publish_conn->client)
+                    {
+                        mqtt_send_file(publish_conn,res.filename,METER_DATA_TOPIC);
+                    }
+                    else
+                    {
+                        LOG_INFO("[MQTT] Profile publish skipped - broker disconnected");
+                    }
+
                     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
                     sprintf(file_rem_cmd, "rm %s", res.filename);
                     system(file_rem_cmd);
                     LOG_INFO("%s is deleted successfully", res.filename);
+                    clock_gettime(CLOCK_MONOTONIC, &dead_end);
+                    long elapsed_ms_pub =
+                            (dead_end.tv_sec - mid_start.tv_sec) * 1000L +
+                            (dead_end.tv_nsec - mid_start.tv_nsec) / 1000000L;
+
+                    LOG_INFO("Meter %s - Time taken after publishing and deletion: %ld ms (%.3f seconds)",serial, elapsed_ms_pub, elapsed_ms_pub / 1000.0);
                 }
             }
         }
 
-        if (check_redis_resp == 1)
+        if (check_redis_resp == 1 && current_active && current_active->connected)
         {
             read_redis_resp(current_active);
         }
 
-        // interval_sec = current_active->cfg.hc_pub_interval * 60;
-        // elapsed = now - last_publish_hc;
-        // remaining = interval_sec - elapsed;
-        // if (remaining > 0)
-        // {
-        //     LOG_INFO("Health check messages will publish in %d minutes", remaining / 60);
-        // }
-        // if (current_active && (time(NULL) - last_publish_hc >= current_active->cfg.hc_pub_interval * 60))
-        if (current_active && (monotonic_sec() - last_publish_hc >= current_active->cfg.hc_pub_interval * 60))
-        {
-            load_active_meters(ctx);
 
-            // last_publish_hc = time(NULL);
+        /* Health Check */
+        if (current_active && current_active->connected && current_active->client && (monotonic_sec() - last_publish_hc >=
+            current_active->cfg.hc_pub_interval * 60))
+        {
+            mqtt_conn_t *publish_conn = current_active;
+            load_active_meters(ctx);
             last_publish_hc = monotonic_sec();
             char xml_buf[PAYLOAD_BUFFER_SIZE];
             int file_Size;
+            build_health_status_json(ctx,xml_buf,sizeof(xml_buf),&file_Size);
 
-            build_health_status_json(ctx, xml_buf, sizeof(xml_buf), &file_Size);
-
-            mqtt_send_msg(current_active, xml_buf, file_Size, HEALTH_DATA_TOPIC);
+            if (publish_conn->connected && publish_conn->client)
+            {
+                mqtt_send_msg(publish_conn,xml_buf,file_Size,HEALTH_DATA_TOPIC);
+            }
+            else
+            {
+                LOG_INFO("[MQTT] Health check publish skipped - broker disconnected");
+            }
         }
 
-        if (check_redis_resp == 1)
+        if (check_redis_resp == 1 && current_active && current_active->connected)
         {
             read_redis_resp(current_active);
         }
 
-        // Publish modbus messaged ---> 08/04/2026
-        // LOG_INFO("Modbbus messages will Publish in %d minutes",current_active->cfg.modbus_data_pub_interval-(now - last_publish_modbus));
-        // interval_sec = current_active->cfg.modbus_data_pub_interval * 60;
-        // elapsed = now - last_publish_modbus;
-        // remaining = interval_sec - elapsed;
-        // if (remaining > 0)
-        // {
-        //     LOG_INFO("Modbus messages will publish in %d minutes", remaining / 60);
-        // }
-        if (current_active && (now - last_publish_modbus >= current_active->cfg.modbus_data_pub_interval * 60)) // every 60 sec
-        {
-            last_publish_modbus = now;
 
-            char *json = modbus_export_json(ctx, 2); //  set your serial ports
-            printf("%s\n",json);
+        /* Modbus */
+        if (current_active && current_active->connected && current_active->client && (now - last_publish_modbus >=
+            current_active->cfg.modbus_data_pub_interval * 60))
+        {
+            mqtt_conn_t *publish_conn = current_active;
+            last_publish_modbus = now;
+            char *json = modbus_export_json(ctx, 2);
             if (json)
             {
+                printf("%s\n", json);
                 LOG_INFO("Modbus JSON generated");
-                mqtt_send_msg(current_active, json, strlen(json), MODBUS_DATA_TOPIC);
-                free(json); // VERY IMPORTANT
+                if (publish_conn->connected && publish_conn->client)
+                {
+                    mqtt_send_msg(publish_conn,json,strlen(json),MODBUS_DATA_TOPIC);
+                }
+                else
+                {
+                    LOG_INFO("[MQTT] Modbus publish skipped - broker disconnected");
+                }
+
+                free(json); /* VERY IMPORTANT */
             }
             else
             {
                 LOG_ERROR("Failed to generate Modbus JSON");
             }
         }
+
+
         if (current_active)
         {
+            int interval_sec, elapsed, remaining;
+            int hours, minutes, seconds;
+
+            LOG_INFO("+----------------------------------------------------------+");
+            LOG_INFO("|                 MQTT PUBLISH STATUS                      |");
+            LOG_INFO("+----------------------------------------------------------+");
+
             interval_sec = current_active->cfg.modbus_data_pub_interval * 60;
             elapsed = now - last_publish_modbus;
             remaining = interval_sec - elapsed;
             if (remaining > 0)
             {
-                LOG_INFO("Modbus messages will publish in %d minutes", remaining / 60);
+                hours = remaining / 3600;
+                minutes = (remaining % 3600) / 60;
+                seconds = remaining % 60;
+                LOG_INFO("| Modbus Data   : %02d hr %02d min %02d sec                 |",
+                        hours, minutes, seconds);
             }
+
             interval_sec = current_active->cfg.hc_pub_interval * 60;
             elapsed = now - last_publish_hc;
             remaining = interval_sec - elapsed;
             if (remaining > 0)
             {
-                LOG_INFO("Health check messages will publish in %d minutes", remaining / 60);
+                hours = remaining / 3600;
+                minutes = (remaining % 3600) / 60;
+                seconds = remaining % 60;
+                LOG_INFO("| Health Check  : %02d hr %02d min %02d sec                 |",
+                        hours, minutes, seconds);
             }
+
             interval_sec = current_active->cfg.dlms_data_pub_interval * 60;
             elapsed = now - last_publish_profile;
             remaining = interval_sec - elapsed;
             if (remaining > 0)
             {
-                LOG_INFO("Meter Profile Data will publish in %d minutes", remaining / 60);
+                hours = remaining / 3600;
+                minutes = (remaining % 3600) / 60;
+                seconds = remaining % 60;
+                LOG_INFO("| Meter Data    : %02d hr %02d min %02d sec                 |",
+                        hours, minutes, seconds);
             }
+
             interval_sec = current_active->cfg.dlms_inst_pub_interval * 60;
             elapsed = now - last_publish_inst;
             remaining = interval_sec - elapsed;
             if (remaining > 0)
             {
-                LOG_INFO("Instataneous Data will publish in %d minutes", remaining / 60);
+                hours = remaining / 3600;
+                minutes = (remaining % 3600) / 60;
+                seconds = remaining % 60;
+                LOG_INFO("| Instantaneous : %02d hr %02d min %02d sec                 |",
+                        hours, minutes, seconds);
+            }
+
+            LOG_INFO("+----------------------------------------------------------+");
+        }
+        /* ------------------------------------------------ */
+        /* PRIMARY FAILBACK - CHECK ONLY AFTER PUBLISHING   */
+        /* ------------------------------------------------ */
+        if (current_active == &secondary &&
+            secondary.connected &&
+            !primary.connected &&
+            (now - last_primary_retry >= PRI_BROKER_RECONNECT_PERIOD))
+        {
+            last_primary_retry = now;
+
+            LOG_INFO("[FAILBACK] Checking primary broker");
+
+            /* Clear stale connecting state */
+            if (primary_connecting)
+            {
+                if (!primary.connected)
+                {
+                    LOG_INFO("[FAILBACK] Clearing stale primary state");
+                    primary_connecting = 0;
+                    if (primary.client)
+                    {
+                        primary_need_destroy = 1;
+                        primary_destroy_time = monotonic_sec();
+                    }
+                }
+            }
+
+            /* Retry primary only after publishing is completed */
+            if (!primary_connecting &&
+                primary.cfg.enable_mqtt)
+            {
+                LOG_INFO("[FAILBACK] Trying primary broker");
+
+                primary_connecting = 1;
+                mqtt_connect(&primary);
             }
         }
+        if (mqtt_led_connected)
+            mqtt_led_set(1);
+        else
+            mqtt_led_set(0);
         /*If no active connections are there it should shows disconnected */
         if (!primary.connected && !secondary.connected)
         {

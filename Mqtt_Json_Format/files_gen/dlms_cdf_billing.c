@@ -7,12 +7,9 @@ extern int event_cmd_redis_resp;
 extern int ls_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) - fetch/parse once per
- * file generation instead of once per row/parameter. */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key, char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
+// rithika 13Aug2026
+int int_cur_month = 0;
+
 /* ============================================================
  *  Billing data helpers
  * ============================================================ */
@@ -22,23 +19,39 @@ extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root)
  *
  * Reads three sub-hashes from REDIS_HASH_BILL_OBIS_MAP.
  *
- * @param code_root  Parsed param_code map (from fetch_obis_maps(), REDIS_HASH_BILL_OBIS_MAP).
- * @param name_root  Parsed param_name map.
- * @param unit_root  Parsed param_unit map.
+ * @param ctx        Redis context.
  * @param obis       OBIS decimal string.
  * @param code_buf   Output: param code.
  * @param name_buf   Output: param name.
  * @param unit_buf   Output: param unit.
  */
-static void lookup_bill_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *unit_root,
-                                     const char *obis,
+static void lookup_bill_obis_mapping(redisContext *ctx, const char *obis,
                                      char *code_buf, size_t code_len,
                                      char *name_buf, size_t name_len,
                                      char *unit_buf, size_t unit_len)
 {
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
+    /* Default to empty strings on failure */
+    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
+
+    char *code_json = redis_hget(ctx, REDIS_HASH_BILL_OBIS_MAP, REDIS_FIELD_PARAM_CODE);
+    char *name_json = redis_hget(ctx, REDIS_HASH_BILL_OBIS_MAP, REDIS_FIELD_PARAM_NAME);
+    char *unit_json = redis_hget(ctx, REDIS_HASH_BILL_OBIS_MAP, REDIS_FIELD_PARAM_UNIT);
+
+    if (code_json)
+    {
+        parse_obis_map(code_json, obis, code_buf, code_len);
+        free(code_json);
+    }
+    if (name_json)
+    {
+        parse_obis_map(name_json, obis, name_buf, name_len);
+        free(name_json);
+    }
+    if (unit_json)
+    {
+        parse_obis_map(unit_json, obis, unit_buf, unit_len);
+        free(unit_json);
+    }
 }
 
 /**
@@ -67,7 +80,9 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
     /* Build table name */
     char table[128];
     static char od_table[128] = {0};
-    if (billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1)
+    // if (billing_cmd_redis_resp == 1 && ls_cmd_redis_resp == 1 && midnight_cmd_redis_resp == 1 && event_cmd_redis_resp == 1)
+    // {
+    if (billing_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "bill_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -121,10 +136,6 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
     }
 
     int entry_idx = 0;
-
-    /* Fetch+parse the Billing OBIS maps ONCE for this call, not once per row/parameter */
-    cJSON *code_root, *name_root, *unit_root;
-    fetch_obis_maps(ctx, REDIS_HASH_BILL_OBIS_MAP, &code_root, &name_root, &unit_root);
 
     /* Iterate over result rows (max 2) */
     while (sqlite3_step(stmt) == SQLITE_ROW && entry_idx < 2)
@@ -187,8 +198,8 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from the already-parsed Billing map (no Redis call here) */
-            lookup_bill_obis_mapping(code_root, name_root, unit_root, obis,
+            /* Lookup mapping from Billing-specific hash */
+            lookup_bill_obis_mapping(ctx, obis,
                                      p->param_code, sizeof(p->param_code),
                                      p->param_name, sizeof(p->param_name),
                                      p->unit, sizeof(p->unit));
@@ -206,11 +217,12 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
 
     bill_data->entry_count = entry_idx;
 
-    free_obis_maps(code_root, name_root, unit_root);
-
     sqlite3_finalize(stmt);
 
-    if (billing_cmd_redis_resp == 0 && od_table[0] != '\0')
+    // rithika 12Aug2026
+    // if (billing_cmd_redis_resp == 0 && od_table[0] != '\0')
+    // {
+    if (int_cur_month == 0)
     {
         LOG_INFO("Deleting od table %s", od_table);
         drop_table(od_table, db);
@@ -360,6 +372,94 @@ static void cdf_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_da
     //     cJSON_Delete(root);
 }
 
+static void json_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_data, const BillingData *bill_data_curr)
+{
+    (void)ctx;
+    fprintf(fp, "    \"BILLING_PROFILE\": {\n");
+    fprintf(fp, "      \"FIELDS\":[\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
+    fprintf(fp, "      \"PARAMS\":[\n");
+    /* Print parameter definitions only once */
+    if (bill_data->entry_count > 0)
+    {
+        const BillingEntry *entry = &bill_data->entries[0];
+        int first = 1;
+        for (int j = 0; j < entry->param_count; j++)
+        {
+            const BillParam *p = &entry->params[j];
+            if (p->param_name[0] == '\0')
+                continue;
+            if (!first)
+                fprintf(fp, ",\n");
+            fprintf(fp,
+                    "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
+                    p->param_code,
+                    p->obis_hex,
+                    p->param_name,
+                    p->unit);
+
+            first = 0;
+        }
+    }
+
+    fprintf(fp, "\n");
+    fprintf(fp, "      ],\n");
+    fprintf(fp, "      \"VALUES\":[\n");
+
+    int first_record = 1;
+
+    /* Previous billing entries */
+    for (int i = 0; i < bill_data->entry_count; i++)
+    {
+        const BillingEntry *entry = &bill_data->entries[i];
+        if (!first_record)
+            fprintf(fp, ",\n");
+
+        fprintf(fp, "        [\"%s\",[", entry->billing_date);
+        int first_value = 1;
+        for (int j = 0; j < entry->param_count; j++)
+        {
+            const BillParam *p = &entry->params[j];
+            if (p->param_name[0] == '\0')
+                continue;
+            if (!first_value)
+                fprintf(fp, ",");
+            fprintf(fp, "\"%s\"", p->value);
+            first_value = 0;
+        }
+
+        fprintf(fp, "]]");
+        first_record = 0;
+    }
+
+    /* Current month billing entries */
+    for (int i = 0; i < bill_data_curr->entry_count; i++)
+    {
+        const BillingEntry *entry = &bill_data_curr->entries[i];
+        if (!first_record)
+            fprintf(fp, ",\n");
+
+        fprintf(fp, "        [\"%s\",[", entry->billing_date);
+        int first_value = 1;
+        for (int j = 0; j < entry->param_count; j++)
+        {
+            const BillParam *p = &entry->params[j];
+            if (p->param_name[0] == '\0')
+                continue;
+            if (!first_value)
+                fprintf(fp, ",");
+            fprintf(fp, "\"%s\"", p->value);
+            first_value = 0;
+        }
+
+        fprintf(fp, "]]");
+        first_record = 0;
+    }
+
+    fprintf(fp, "\n");
+    fprintf(fp, "      ]\n");
+    fprintf(fp, "    }\n");
+}
+
 /**
  * @brief Generate a CDF file for Billing data (data type 3).
  *
@@ -378,16 +478,36 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     struct tm *curr_date = localtime(&now);
     char date[32];
     char curr_year[32] = {0};
-    strftime(date, sizeof(date), "%b %Y", curr_date);
+    char month[32];
+    char str_year[8];
+    
+
+    strftime(month, sizeof(month), "%b", curr_date);
+    strftime(str_year, sizeof(str_year), "%Y", curr_date);
+
+    if (strstr(month, "Jul"))
+    {
+        sprintf(date, "July %s", str_year);
+    }
+    else if (strstr(date, "Jun"))
+    {
+        sprintf(date, "June %s", str_year);
+    }
+    else
+    {
+        strftime(date, sizeof(date), "%b %Y", curr_date);
+    }
 
     if (strcmp(date, year_month) == 0)
     {
         int year;
         sscanf(year_month, "%*s %d", &year);
         sprintf(curr_year, "curr mon %d", year);
+        
     }
+    LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
 
-    LOG_INFO("Generating Billing CDF for meter %s year-month %s", serial, year_month);
+    LOG_INFO("Generating Billing CDF for meter %s year-month %s date %s, year_month %s curr_year %s", serial, year_month, date, year_month, curr_year);
 
     /* 1. Read meter status from Redis */
     MeterStatus status;
@@ -420,7 +540,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
 
     if (strstr(curr_year, "curr mon "))
     {
-
+     
         if (read_billing_data(sqlite_db_path, &status, serial, curr_year, ctx, &bill_data_curr) != 0)
         {
             LOG_ERROR("Cannot read billing data for meter %s year-month %s", serial, curr_year);
@@ -460,7 +580,6 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     {
         LOG_ERROR("Cannot open output file: %s (%s)", out_path, strerror(errno));
         billing_data_free(&bill_data);
-        billing_data_free(&bill_data_curr);
         return -1;
     }
 
@@ -473,11 +592,154 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
 
     fclose(fp);
     billing_data_free(&bill_data);
-    billing_data_free(&bill_data_curr);
-    LOG_INFO("Bill data freeing implemented in this code!!!");
 
     strcpy(output_file, out_path);
     LOG_INFO("Billing CDF written: %s", out_path);
     printf("CDF file generated: %s\n", out_path);
+    return 0;
+}
+
+int generate_billing_json(redisContext *ctx, const char *serial, const char *year_month, char *output_file)
+{
+    time_t now = time(NULL);
+    struct tm *curr_date = localtime(&now);
+    char date[32];
+    char curr_year[32] = {0};
+
+    char month[32];
+    char str_year[8];
+ int_cur_month = 0;
+
+    strftime(month, sizeof(month), "%b", curr_date);
+    strftime(str_year, sizeof(str_year), "%Y", curr_date);
+
+    if (strstr(month, "Jul"))
+    {
+        sprintf(date, "July %s", str_year);
+    }
+    else if (strstr(month, "Jun"))
+    {
+        sprintf(date, "June %s", str_year);
+    }
+    else
+    {
+        strftime(date, sizeof(date), "%b %Y", curr_date);
+    }
+
+    if (strcmp(date, year_month) == 0)
+    {
+        int year;
+        sscanf(year_month, "%*s %d", &year);
+        sprintf(curr_year, "curr mon %d", year);
+        int_cur_month++;
+    }
+    LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
+
+    LOG_INFO("Generating Billing JSON for meter %s year-month %s", serial, year_month);
+
+    /* 1. Read meter status from Redis */
+    MeterStatus status;
+    if (read_meter_status(ctx, serial, &status) != 0)
+    {
+        LOG_ERROR("Cannot read meter status for meter %s", serial);
+        return -1;
+    }
+
+    /* Database path */
+    char base_path_dir[256];
+    char sqlite_db_path[256];
+
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    {
+        snprintf(sqlite_db_path,
+                 sizeof(sqlite_db_path),
+                 "%s/data/dcu_dlms.db",
+                 base_path_dir);
+    }
+
+    /* 2. Read Billing data */
+    BillingData bill_data;
+    if (read_billing_data(sqlite_db_path,
+                          &status,
+                          serial,
+                          year_month,
+                          ctx,
+                          &bill_data) != 0)
+    {
+        LOG_ERROR("Cannot read billing data for meter %s year-month %s",
+                  serial,
+                  year_month);
+    }
+
+    BillingData bill_data_curr = {0};
+
+    if (strstr(curr_year, "curr mon "))
+    {
+        int_cur_month--;
+        if (read_billing_data(sqlite_db_path,
+                              &status,
+                              serial,
+                              curr_year,
+                              ctx,
+                              &bill_data_curr) != 0)
+        {
+            LOG_ERROR("Cannot read billing data for meter %s year-month %s",
+                      serial,
+                      curr_year);
+        }
+    }
+
+    if (bill_data.entry_count == 0)
+    {
+        LOG_WARN("No billing data found for meter %s in %s",
+                 serial,
+                 year_month);
+    }
+
+    /* 3. Build output file path */
+    char dt_str[32];
+    get_datetime_str(dt_str, sizeof(dt_str));
+
+    char out_path[512];
+    char base_path[256];
+
+    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    {
+        snprintf(out_path,
+                 sizeof(out_path),
+                 "%s/data/BILL_%s_%s.json",
+                 base_path,
+                 serial,
+                 year_month);
+    }
+
+    FILE *fp = fopen(out_path, "w");
+    if (!fp)
+    {
+        LOG_ERROR("Cannot open output file: %s (%s)",
+                  out_path,
+                  strerror(errno));
+
+        billing_data_free(&bill_data);
+        return -1;
+    }
+
+    /* 4. Write JSON */
+    json_write_header(fp, "BILLING_DATA_MESSAGE");
+    json_write_general(ctx, fp, serial, dt_str);
+    json_write_d1(fp, ctx, serial);
+    json_write_d3(fp, ctx, &bill_data, &bill_data_curr);
+    json_write_footer(fp);
+
+    fclose(fp);
+
+    billing_data_free(&bill_data);
+    billing_data_free(&bill_data_curr);
+
+    strcpy(output_file, out_path);
+
+    LOG_INFO("Billing JSON written: %s", out_path);
+    printf("JSON file generated: %s\n", out_path);
+
     return 0;
 }

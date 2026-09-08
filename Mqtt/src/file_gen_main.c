@@ -460,6 +460,8 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
     snprintf(field_key, sizeof(field_key),
              "meter_*_*_%s_details", serial);
 
+    LOG_INFO("Free of pointer variables is added in this version!!!!!This is a workout version..so dont need to worry");
+
     LOG_INFO("Fetching IPaddress and meter name from meter_status[%s]", field_key);
 
     redisReply *r = redisCommand(ctx,
@@ -551,6 +553,7 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
                 dcu_name, attr1, attr2, attr3,
                 attr4, attr5, dcu_ser, dt_str,
                 location, ipv4_address);
+        free(ipv4_address);
     }
     else
     {
@@ -571,6 +574,15 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
                 attr4, attr5, dcu_ser, dt_str,
                 location);
     }
+    free(dcu_name);
+    free(attr1);
+    free(attr2);
+    free(attr3);
+    free(attr4);
+    free(attr5);
+    free(dcu_ser);
+    cJSON_Delete(j);
+    LOG_INFO("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Freeing is done properly @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
 }
 
 /**
@@ -608,7 +620,7 @@ void cdf_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
     char field_key[128];
     snprintf(field_key, sizeof(field_key),
              "meter_*_*_%s_details", meter_sn);
-
+    LOG_INFO("Write D1 Freeing also implemented!!!");
     LOG_INFO("Fetching D1 from meter_status[%s]", field_key);
 
     redisReply *r = redisCommand(rc,
@@ -727,6 +739,7 @@ void cdf_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
                 "", HDLC_SETUP, "", hdlc_device_address,
                 "", TRANSFRMR_RATIO_VOLTAGE, "", tranfmr_volt,
                 "", EXTRA_OBIS_3, "", extra_obis_3);
+        free(ipv4_address);
     }
     else
     {
@@ -931,8 +944,7 @@ cdf_result_t generate_instantaneous_cdf(redisContext *ctx, const char *serial)
 
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
-        snprintf(result.filename,
-                 sizeof(result.filename),
+        snprintf(result.filename,sizeof(result.filename),
                  "%s/data/CDF_INST_%s_%s.xml",
                  base_path, serial, date_str);
 
@@ -1497,7 +1509,7 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
         // return result; //rithika commented 28/04/2026
     }
 
-     clock_gettime(CLOCK_MONOTONIC, &min_start);
+    clock_gettime(CLOCK_MONOTONIC, &min_start);
     int rc3 = generate_midnight_cdf(ctx, serial, date, mn_file_name);
    
      clock_gettime(CLOCK_MONOTONIC, &min_end);
@@ -1516,7 +1528,7 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     clock_gettime(CLOCK_MONOTONIC, &event_start);
     int rc4 = generate_event_log_cdf(ctx, serial, date, event_type, event_file_name);
    
-      clock_gettime(CLOCK_MONOTONIC, &event_end);
+    clock_gettime(CLOCK_MONOTONIC, &event_end);
 
     long elapsed_ms_event =
         (event_end.tv_sec - event_start.tv_sec) * 1000L +
