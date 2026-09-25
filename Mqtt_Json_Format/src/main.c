@@ -538,9 +538,11 @@ void *mqtt_worker_thread(void *arg)
             struct tm *tm_det = localtime(&t);
             char today_date[16];
             strftime(today_date, sizeof(today_date),"%Y-%m-%d", tm_det);
+            struct timespec start, mid_start , end,mid_end,dead_end, top_start,top_end;
+            clock_gettime(CLOCK_MONOTONIC, &top_start);
             for (int i = 0; i < meter_count; i++)
             {
-                struct timespec start, mid_start , end,mid_end,dead_end;
+                
                 clock_gettime(CLOCK_MONOTONIC, &start);
                 const char *serial = meter_serials[i];
                 cdf_result_t res = generate_profile_json(ctx, serial,today_date, "all");
@@ -576,6 +578,12 @@ void *mqtt_worker_thread(void *arg)
                     LOG_INFO("Meter %s - Time taken after publishing and deletion: %ld ms (%.3f seconds)",serial, elapsed_ms_pub, elapsed_ms_pub / 1000.0);
                 }
             }
+            clock_gettime(CLOCK_MONOTONIC, &top_end);
+            long elapsed_ms =
+                (top_end.tv_sec - top_start.tv_sec) * 1000L +
+                (top_end.tv_nsec - top_start.tv_nsec) / 1000000L;
+
+            LOG_INFO("Time taken for entire file generation for all the meters completion : %ld ms (%.3f seconds)",elapsed_ms, elapsed_ms / 1000.0);
         }
 
         if (check_redis_resp == 1 && current_active && current_active->connected)

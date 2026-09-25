@@ -17,6 +17,9 @@
 
 #include "../include/general.h"
 
+#define NO_OF_LS_BLOCKS  288
+
+
 extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
@@ -316,7 +319,7 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     LOG_INFO("Query returned %d columns", col_count);
 
     /* Allocate for up to 96 intervals (15-min blocks: 24h * 4) */
-    day_profile->intervals = (LSInterval *)calloc(96, sizeof(LSInterval));
+    day_profile->intervals = (LSInterval *)calloc(NO_OF_LS_BLOCKS, sizeof(LSInterval));
     if (!day_profile->intervals)
     {
         LOG_ERROR("Memory allocation failed for LS intervals");
@@ -332,7 +335,7 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
     fetch_obis_maps(ctx, REDIS_HASH_LS_OBIS_MAP, &code_root, &name_root, &unit_root);
 
     /* Iterate over result rows */
-    while (sqlite3_step(stmt) == SQLITE_ROW && interval_idx < 96)
+    while (sqlite3_step(stmt) == SQLITE_ROW && interval_idx < NO_OF_LS_BLOCKS)
     {
         LSInterval *interval = &day_profile->intervals[interval_idx];
         interval->interval_num = interval_idx;

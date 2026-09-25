@@ -6,6 +6,13 @@ extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
+/* Shared OBIS-map cache helpers (defined in file_gen_main.c) */
+extern void fetch_obis_maps(redisContext *ctx, const char *hash,
+                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
+extern void lookup_obis_value(cJSON *root, const char *obis_key,
+                              char *out_buf, size_t out_len);
+extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
+
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
     {1, "Voltage events", "0_0_96_11_0_255", "0_0_99_98_0_255"},
@@ -46,33 +53,19 @@ static const EventTypeMap *get_event_type_map(int event_type)
  * @param name_buf   Output: param name.
  * @param unit_buf   Output: param unit.
  */
-static void lookup_event_obis_mapping(redisContext *ctx, const char *obis,
-                                      char *code_buf, size_t code_len,
-                                      char *name_buf, size_t name_len,
-                                      char *unit_buf, size_t unit_len)
+static void lookup_event_obis_mapping(cJSON *code_root,
+                                       cJSON *name_root,
+                                       cJSON *unit_root,
+                                       const char *obis,
+                                       char *code_buf, size_t code_len,
+                                       char *name_buf, size_t name_len,
+                                       char *unit_buf, size_t unit_len)
 {
-    /* Default to empty strings on failure */
     code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
 
-    char *code_json = redis_hget(ctx, REDIS_HASH_EVENT_OBIS_MAP, REDIS_FIELD_PARAM_CODE);
-    char *name_json = redis_hget(ctx, REDIS_HASH_EVENT_OBIS_MAP, REDIS_FIELD_PARAM_NAME);
-    char *unit_json = redis_hget(ctx, REDIS_HASH_EVENT_OBIS_MAP, REDIS_FIELD_PARAM_UNIT);
-
-    if (code_json)
-    {
-        parse_obis_map(code_json, obis, code_buf, code_len);
-        free(code_json);
-    }
-    if (name_json)
-    {
-        parse_obis_map(name_json, obis, name_buf, name_len);
-        free(name_json);
-    }
-    if (unit_json)
-    {
-        parse_obis_map(unit_json, obis, unit_buf, unit_len);
-        free(unit_json);
-    }
+    lookup_obis_value(code_root, obis, code_buf, code_len);
+    lookup_obis_value(name_root, obis, name_buf, name_len);
+    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
 }
 
 /**
@@ -138,13 +131,13 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
         char year_month[8];
         strftime(year_month, sizeof(year_month), "%Y-%m", t);
         snprintf(where_clause, sizeof(where_clause),
-                 "WHERE strftime('%%Y-%%m', \"0_0_1_0_0_255\") = '%s'", year_month);
+                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%'", year_month);
     }
     else if (!is_date_all && is_event_type_all)
     {
         /* All events on a specific date */
         snprintf(where_clause, sizeof(where_clause),
-                 "WHERE DATE(\"0_0_1_0_0_255\") = '%s'", date);
+                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%'", date);
     }
     else if (is_date_all && !is_event_type_all)
     {
@@ -156,7 +149,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     {
         /* Specific event type on a specific date */
         snprintf(where_clause, sizeof(where_clause),
-                 "WHERE DATE(\"0_0_1_0_0_255\") = '%s' AND event_type = '%s'",
+                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%' AND event_type = '%s'",
                  date, event_type);
     }
 
@@ -197,6 +190,13 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
         sqlite3_close(db);
         return -1;
     }
+
+    /* Fetch+parse Event OBIS maps ONCE for this read, not once per parameter */
+    cJSON *code_root = NULL;
+    cJSON *name_root = NULL;
+    cJSON *unit_root = NULL;
+    fetch_obis_maps(ctx, REDIS_HASH_EVENT_OBIS_MAP,
+                    &code_root, &name_root, &unit_root);
 
     int entry_idx = 0;
 
@@ -306,10 +306,10 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
 
             
             /* Lookup mapping from Event-specific hash */
-            lookup_event_obis_mapping(ctx, col_name,
-                                      p->param_code, sizeof(p->param_code),
-                                      p->param_name, sizeof(p->param_name),
-                                      p->unit, sizeof(p->unit));
+            lookup_event_obis_mapping(code_root, name_root, unit_root, col_name,
+                                       p->param_code, sizeof(p->param_code),
+                                       p->param_name, sizeof(p->param_name),
+                                       p->unit, sizeof(p->unit));
 
             param_idx++;
         }
@@ -319,6 +319,8 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
 
     event_data->entry_count = entry_idx;
+
+    free_obis_maps(code_root, name_root, unit_root);
 
     sqlite3_finalize(stmt);
 

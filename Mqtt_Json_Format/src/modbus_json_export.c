@@ -24,6 +24,11 @@
 #include "../include/general.h"
 /* Max limits — must match module config headers */
 
+#define MAX_DEVICES         32
+#define MAX_REGS_PER_DEV    128
+#define MAX_MODRTU_DEVICES  5
+#define MAX_MODTCP_DEVICES  10
+
 
 /* =========================================================================
  * Growable JSON buffer
@@ -1010,16 +1015,34 @@ char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
      * ---------------------------------------------------------- */
     int dev_count = 0;
     /* RTU */
+    // for (uint16_t p = 0; p < num_serial_ports; p++)
+    // {
+    //     for (uint16_t d = 0; d < MAX_RTU_DEVICES; d++)
+    //     {
+    //         dev_count++;
+    //         int is_last = (dev_count == total_devices);
+    //         if (!export_modrtu_device(&jb,ctx,p,d,is_last))
+    //         {
+    //             dev_count--;
+    //         }
+    //     }
+    // }
+
     for (uint16_t p = 0; p < num_serial_ports; p++)
     {
-        for (uint16_t d = 0; d < MAX_RTU_DEVICES; d++)
+        char key[128];
+        snprintf(key, sizeof(key), "serial_port_%u_cfg", p);
+
+        if (rget_int(ctx, key, "device_type", 0) != 2)
+            continue;
+
+        for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
         {
+            int before = dev_count;
             dev_count++;
             int is_last = (dev_count == total_devices);
-            if (!export_modrtu_device(&jb,ctx,p,d,is_last))
-            {
-                dev_count--;
-            }
+            if (!export_modrtu_device(&jb, ctx, p, d, is_last))
+                dev_count = before;
         }
     }
 

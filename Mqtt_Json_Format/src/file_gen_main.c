@@ -16,6 +16,8 @@
  */
 
 #include "../include/general.h"
+#include <unistd.h>
+#include <sys/wait.h>
 
 extern int event_cmd_redis_resp;
 extern int ls_cmd_redis_resp;
@@ -168,33 +170,77 @@ int parse_obis_map(const char *json_str, const char *obis_key,
  * @param name_buf   Output: param name.
  * @param unit_buf   Output: param unit.
  */
-static void lookup_obis_mapping(redisContext *ctx, const char *obis,
+/* Cached OBIS mapping helpers */
+void fetch_obis_maps(redisContext *ctx,
+                            const char *hash,
+                            cJSON **code_root,
+                            cJSON **name_root,
+                            cJSON **unit_root)
+{
+    *code_root = *name_root = *unit_root = NULL;
+
+    char *code_json = redis_hget(ctx, hash, REDIS_FIELD_PARAM_CODE);
+    char *name_json = redis_hget(ctx, hash, REDIS_FIELD_PARAM_NAME);
+    char *unit_json = redis_hget(ctx, hash, REDIS_FIELD_PARAM_UNIT);
+
+    if (code_json)
+    {
+        *code_root = cJSON_Parse(code_json);
+        free(code_json);
+    }
+
+    if (name_json)
+    {
+        *name_root = cJSON_Parse(name_json);
+        free(name_json);
+    }
+
+    if (unit_json)
+    {
+        *unit_root = cJSON_Parse(unit_json);
+        free(unit_json);
+    }
+}
+
+void lookup_obis_value(cJSON *root,
+                              const char *obis_key,
+                              char *out_buf,
+                              size_t out_len)
+{
+    out_buf[0] = '\0';
+
+    if (!root)
+        return;
+
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(root, obis_key);
+
+    if (cJSON_IsString(item) && item->valuestring)
+        snprintf(out_buf, out_len, "%s", item->valuestring);
+}
+
+void free_obis_maps(cJSON *code_root,
+                           cJSON *name_root,
+                           cJSON *unit_root)
+{
+    if (code_root)
+        cJSON_Delete(code_root);
+    if (name_root)
+        cJSON_Delete(name_root);
+    if (unit_root)
+        cJSON_Delete(unit_root);
+}
+
+static void lookup_obis_mapping(cJSON *code_root,
+                                cJSON *name_root,
+                                cJSON *unit_root,
+                                const char *obis,
                                 char *code_buf, size_t code_len,
                                 char *name_buf, size_t name_len,
                                 char *unit_buf, size_t unit_len)
 {
-    /* Default to empty strings on failure */
-    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
-
-    char *code_json = redis_hget(ctx, REDIS_HASH_OBIS_MAP, REDIS_FIELD_PARAM_CODE);
-    char *name_json = redis_hget(ctx, REDIS_HASH_OBIS_MAP, REDIS_FIELD_PARAM_NAME);
-    char *unit_json = redis_hget(ctx, REDIS_HASH_OBIS_MAP, REDIS_FIELD_PARAM_UNIT);
-
-    if (code_json)
-    {
-        parse_obis_map(code_json, obis, code_buf, code_len);
-        free(code_json);
-    }
-    if (name_json)
-    {
-        parse_obis_map(name_json, obis, name_buf, name_len);
-        free(name_json);
-    }
-    if (unit_json)
-    {
-        parse_obis_map(unit_json, obis, unit_buf, unit_len);
-        free(unit_json);
-    }
+    lookup_obis_value(code_root, obis, code_buf, code_len);
+    lookup_obis_value(name_root, obis, name_buf, name_len);
+    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
 }
 
 /* ============================================================
@@ -301,6 +347,14 @@ static int read_instantaneous_data(redisContext *ctx,
         return -1;
     }
 
+    /* Fetch OBIS maps once instead of querying Redis for every parameter. */
+    cJSON *code_root = NULL;
+    cJSON *name_root = NULL;
+    cJSON *unit_root = NULL;
+
+    fetch_obis_maps(ctx, REDIS_HASH_OBIS_MAP,
+                    &code_root, &name_root, &unit_root);
+
     int val_count = cJSON_GetArraySize(val_arr);
     int param_idx = 0;
 
@@ -341,7 +395,7 @@ static int read_instantaneous_data(redisContext *ctx,
         snprintf(p->value, sizeof(p->value), "%s", val);
 
         /* Resolve name, code, unit from Redis mapping hash */
-        lookup_obis_mapping(ctx, obis,
+        lookup_obis_mapping(code_root, name_root, unit_root, obis,
                             p->param_code, sizeof(p->param_code),
                             p->param_name, sizeof(p->param_name),
                             p->unit, sizeof(p->unit));
@@ -354,6 +408,7 @@ static int read_instantaneous_data(redisContext *ctx,
     }
 
     snapshot->param_count = param_idx;
+    free_obis_maps(code_root, name_root, unit_root);
     cJSON_Delete(root);
 
     LOG_INFO("Meter %s: parsed %d parameters (timestamp: %s)",
@@ -497,6 +552,8 @@ void cdf_write_general(redisContext *ctx, FILE *fp, const char *serial, const ch
                 dcu_name, attr1, attr2, attr3,
                 attr4, attr5, dcu_ser, dt_str,
                 location, ipv4_address);
+
+        free(ipv4_address);
     }
     else
     {
@@ -639,7 +696,7 @@ void cdf_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
         int int_met_id = atoi(met_id);
         char ip_addr_key[64] = {0};
         snprintf(ip_addr_key, sizeof(ip_addr_key), "ip_addr[%d]", int_met_id);
-        char *ipv4_address = redis_hget(ctx, "ethernet_meter_cfg", ip_addr_key);
+        char *ipv4_address = redis_hget(rc, "ethernet_meter_cfg", ip_addr_key);
         printf("ipv4_address %s ip_addr_key %s\n", ipv4_address, ip_addr_key);
 
         fprintf(out,
@@ -1075,6 +1132,9 @@ void json_write_general(redisContext *ctx, FILE *fp, const char *serial, const c
     free(attr4);
     free(attr5);
     free(dcu_ser);
+    free(fw_ver);
+    free(modem_imei);
+    free(dcu_loc);
 }
 
 void json_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
@@ -1718,10 +1778,30 @@ int generate_zip_file(const char *base_name, size_t *zip_size)
         return -1;
     }
 
-    int status = system(cmd);
-    if (status != 0)
+    pid_t pid = fork();
+
+    if (pid < 0)
     {
-        LOG_ERROR(stderr, "tar command failed\n");
+        LOG_ERROR("Failed to fork for tar");
+        return -1;
+    }
+
+    if (pid == 0)
+    {
+        execlp("tar", "tar", "-czf", zip_file_name, base_name, (char *)NULL);
+        _exit(EXIT_FAILURE);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0)
+    {
+        LOG_ERROR("waitpid failed for tar");
+        return -1;
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    {
+        LOG_ERROR("tar command failed");
         return -1;
     }
 
@@ -1987,37 +2067,35 @@ cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const c
     // return result; //rithika commented 28/04/2026
 
     // rithika 18Apr2026
-    char file_rem_cmd[128];
-    sprintf(file_rem_cmd, "rm %s", ls_file_name);
-    system(file_rem_cmd);
-    LOG_INFO("%s is deleted successfully", ls_file_name);
+    if (remove(ls_file_name) == 0)
+        LOG_INFO("%s is deleted successfully", ls_file_name);
+    else
+        LOG_WARN("Failed to delete %s: %s", ls_file_name, strerror(errno));
 
-    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    sprintf(file_rem_cmd, "rm %s", mn_file_name);
-    system(file_rem_cmd);
-    LOG_INFO("%s is deleted successfully", mn_file_name);
+    if (remove(mn_file_name) == 0)
+        LOG_INFO("%s is deleted successfully", mn_file_name);
+    else
+        LOG_WARN("Failed to delete %s: %s", mn_file_name, strerror(errno));
 
-    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    sprintf(file_rem_cmd, "rm \"%s\"", billing_file_name);
-    system(file_rem_cmd);
-    LOG_INFO("%s is deleted successfully", billing_file_name);
+    if (remove(billing_file_name) == 0)
+        LOG_INFO("%s is deleted successfully", billing_file_name);
+    else
+        LOG_WARN("Failed to delete %s: %s", billing_file_name, strerror(errno));
 
-    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    sprintf(file_rem_cmd, "rm %s", event_file_name);
-    system(file_rem_cmd);
-
-    LOG_INFO("%s is deleted successfully", event_file_name);
+    if (remove(event_file_name) == 0)
+        LOG_INFO("%s is deleted successfully", event_file_name);
+    else
+        LOG_WARN("Failed to delete %s: %s", event_file_name, strerror(errno));
 
     /* Zip */
     long zip_size = 0;
     if (generate_zip_file(output_file_name, &zip_size) != 0)
         return result;
 
-    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    sprintf(file_rem_cmd, "rm %s", output_file_name);
-    system(file_rem_cmd);
-
-    LOG_INFO("%s is deleted successfully", output_file_name);
+    if (remove(output_file_name) == 0)
+        LOG_INFO("%s is deleted successfully", output_file_name);
+    else
+        LOG_WARN("Failed to delete %s: %s", output_file_name, strerror(errno));
 
     /* Fill result */
     result.status = 0;
@@ -2131,26 +2209,27 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
 
     // rithika 18Apr2026
 
-    // char file_rem_cmd[128];
-    // sprintf(file_rem_cmd, "rm %s", ls_file_name);
-    // system(file_rem_cmd);
-    // LOG_INFO("%s is deleted successfully", ls_file_name);
+    
+    char file_rem_cmd[128];
+    sprintf(file_rem_cmd, "rm %s", ls_file_name);
+    system(file_rem_cmd);
+    LOG_INFO("%s is deleted successfully", ls_file_name);
 
-    // memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    // sprintf(file_rem_cmd, "rm %s", mn_file_name);
-    // system(file_rem_cmd);
-    // LOG_INFO("%s is deleted successfully", mn_file_name);
+    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+    sprintf(file_rem_cmd, "rm %s", mn_file_name);
+    system(file_rem_cmd);
+    LOG_INFO("%s is deleted successfully", mn_file_name);
 
-    // memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    // sprintf(file_rem_cmd, "rm \"%s\"", billing_file_name);
-    // system(file_rem_cmd);
-    // LOG_INFO("%s is deleted successfully", billing_file_name);
+    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+    sprintf(file_rem_cmd, "rm \"%s\"", billing_file_name);
+    system(file_rem_cmd);
+    LOG_INFO("%s is deleted successfully", billing_file_name);
 
-    // memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
-    // sprintf(file_rem_cmd, "rm %s", event_file_name);
-    // system(file_rem_cmd);
+    memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+    sprintf(file_rem_cmd, "rm %s", event_file_name);
+    system(file_rem_cmd);
+    LOG_INFO("%s is deleted successfully", event_file_name);
 
-    // LOG_INFO("%s is deleted successfully", event_file_name);
 
     /* Zip */
     // long zip_size = 0;
