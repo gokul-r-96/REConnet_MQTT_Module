@@ -2755,18 +2755,55 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg)
 //     return 1;
 // }
 
-int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
+// int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
+// {
+//     pthread_mutex_lock(&cmd_mutex);
+
+//     memset(mqtt_cmd_buffer, 0, sizeof(mqtt_cmd_buffer));
+
+//     memcpy(mqtt_cmd_buffer,
+//            message->payload,
+//            message->payloadlen);
+
+//     mqtt_cmd_recv = 1;
+
+//     pthread_mutex_unlock(&cmd_mutex);
+
+//     MQTTAsync_freeMessage(&message);
+//     MQTTAsync_free(topicName);
+
+//     return 1;
+// }
+
+
+int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_message *message)
 {
+    mqtt_conn_t *conn = (mqtt_conn_t *)context;
     pthread_mutex_lock(&cmd_mutex);
-
     memset(mqtt_cmd_buffer, 0, sizeof(mqtt_cmd_buffer));
+    int len = message->payloadlen;
+    if (len >= sizeof(mqtt_cmd_buffer))
+        len = sizeof(mqtt_cmd_buffer) - 1;
 
-    memcpy(mqtt_cmd_buffer,
-           message->payload,
-           message->payloadlen);
+    memcpy(mqtt_cmd_buffer, message->payload, len);
+    mqtt_cmd_buffer[len] = '\0';
+    if (conn == &mqtt1)
+    {
+        mqtt_cmd_broker = 0;
+        LOG_INFO("[MQTT RX] Message received from mqtt1");
+    }
+    else if (conn == &mqtt2)
+    {
+        mqtt_cmd_broker = 1;
+        LOG_INFO("[MQTT RX] Message received from mqtt2");
+    }
+    else
+    {
+        mqtt_cmd_broker = -1;
+        LOG_ERROR("[MQTT RX] Unknown MQTT broker");
+    }
 
     mqtt_cmd_recv = 1;
-
     pthread_mutex_unlock(&cmd_mutex);
 
     MQTTAsync_freeMessage(&message);
@@ -2774,6 +2811,8 @@ int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_m
 
     return 1;
 }
+
+
 
 // int update_mqtt_status(char *status)
 // {
