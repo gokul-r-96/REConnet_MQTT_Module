@@ -1355,12 +1355,12 @@ void *mqtt_worker_thread(void *arg)
             if (broker == 0)
             {
                 LOG_INFO("[COMMAND] Processing command from mqtt1");
-                processServerMsg(&mqtt1, local_cmd);
+                processServerMsg(&mqtt1, local_cmd, broker);
             }
             else if (broker == 1)
             {
                 LOG_INFO("[COMMAND] Processing command from mqtt2");
-                processServerMsg(&mqtt2, local_cmd);
+                processServerMsg(&mqtt2, local_cmd, broker);
             }
             else
             {

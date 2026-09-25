@@ -2424,7 +2424,7 @@ int read_redis_resp(mqtt_conn_t *conn)
 //     }
 // }
 
-int processServerMsg(mqtt_conn_t *conn, const char *msg)
+int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 {
     int i;
     int meter_avalb = 0;

@@ -548,7 +548,7 @@ int on_message_arrived(void *context,
                        int topicLen,
                        MQTTAsync_message *message);
 int success_resp_msg_cdf(redisContext *ctx, resp_msg resp, char *out_buf);
-int processServerMsg(mqtt_conn_t *conn, const char *msg);
+int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker);
 #ifndef MONOTONIC_SEC_DEFINED
 #define MONOTONIC_SEC_DEFINED
 
