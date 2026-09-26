@@ -86,6 +86,8 @@ volatile int mqtt_cmd_recv = 0;
 
 volatile int mqtt_cmd_broker = -1;   /* 0=mqtt1, 1=mqtt2 */
 
+// rithika 25Sept2026
+int Fetchday_cmd_broker = -1;
 pthread_mutex_t cmd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 extern volatile int mqtt_led_connected; /*Gokul added this for cloud status showing the broker is connected --> 04/09/2026*/
@@ -2570,6 +2572,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 
     else if (!strcmp(cmd.type, "FetchDay") && cmd.args[0][0] != '\0')
     {
+         Fetchday_cmd_broker  = broker;
         /*Serial Number check for the incoming messages*/
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
         if (strcmp(cmd.args[0], dcu_sn) != 0)

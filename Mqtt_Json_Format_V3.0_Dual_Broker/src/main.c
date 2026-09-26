@@ -24,11 +24,10 @@ time_t secn_mqtt_conn_time;
 int cur_active_mqtt = -1;
 char dcu_ser_num[SIZE_32];
 
-
 char mqtt1_status_hash[32];
 char mqtt2_status_hash[32];
 
-//Gokul added the variables for the mqtt cloud status led updation --> 04/09/2026
+// Gokul added the variables for the mqtt cloud status led updation --> 04/09/2026
 
 #define MQTT_LED_GPIO 87
 volatile int mqtt_led_connected = 0;
@@ -48,7 +47,6 @@ time_t last_publish_modbus = 0;
 
 extern time_t mqtt1_connect_start;
 extern time_t mqtt2_connect_start;
-
 
 #define mqtt1_RETRY_SEC 60
 #define mqtt2_RETRY_SEC 60
@@ -88,6 +86,8 @@ extern time_t mqtt2_lost_time;
 extern char mqtt_cmd_buffer[4096];
 extern volatile int mqtt_cmd_recv;
 extern pthread_mutex_t cmd_mutex;
+
+extern int Fetchday_cmd_broker;
 
 /**
  * mqtt_module_start()
@@ -177,7 +177,6 @@ void load_active_meters(redisContext *ctx)
     printf("Active meters: %d\n", meter_count);
 }
 
-
 int get_active_broker()
 {
     if (current_active == &mqtt1 && mqtt1.connected)
@@ -189,7 +188,6 @@ int get_active_broker()
     return -1; // NONE
 }
 
-
 static void mqtt_led_set(int value)
 {
     FILE *fp = fopen("/sys/class/gpio/gpio87/value", "w");
@@ -199,7 +197,6 @@ static void mqtt_led_set(int value)
     fprintf(fp, "%d", value);
     fclose(fp);
 }
-
 
 static int mqtt_led_init(void)
 {
@@ -227,12 +224,11 @@ static int mqtt_led_init(void)
     return 0;
 }
 
-
 // void *mqtt_worker_thread(void *arg)
 // {
 //     char file_rem_cmd[128];
 //     time_t last_mqtt1_retry = 0;
-    
+
 //     // rithika 16April2026
 //     time_t last_nw_logger_check = 0;
 //     int inst_data_interval = 0;
@@ -248,7 +244,6 @@ static int mqtt_led_init(void)
 //         // time_t now = time(NULL);
 //         time_t now = monotonic_sec();
 
-        
 //         if (mqtt1_connecting && mqtt1_connect_start > 0 && (now - mqtt1_connect_start >= MQTT_CONNECT_TIMEOUT))
 //         {
 //             LOG_ERROR("[WATCHDOG] mqtt1 connection timeout");
@@ -467,7 +462,6 @@ static int mqtt_led_init(void)
 //             }
 //         }
 
-
 //         if (mqtt1_need_destroy)
 //         {
 //             // if ((time(NULL) - mqtt1_destroy_time) >= 2)
@@ -507,7 +501,7 @@ static int mqtt_led_init(void)
 //             }
 //         }
 //         // ///////////////////////////
-        
+
 //         printf("check_redis_resp %d\n\n", check_redis_resp);
 
 //         if (check_redis_resp == 1 && current_active && current_active->connected)
@@ -561,7 +555,7 @@ static int mqtt_led_init(void)
 //             clock_gettime(CLOCK_MONOTONIC, &top_start);
 //             for (int i = 0; i < meter_count; i++)
 //             {
-                
+
 //                 clock_gettime(CLOCK_MONOTONIC, &start);
 //                 const char *serial = meter_serials[i];
 //                 cdf_result_t res = generate_profile_json(ctx, serial,today_date, "all");
@@ -610,7 +604,6 @@ static int mqtt_led_init(void)
 //             read_redis_resp(current_active);
 //         }
 
-
 //         /* Health Check */
 //         if (current_active && current_active->connected && current_active->client && (monotonic_sec() - last_publish_hc >=
 //             current_active->cfg.hc_pub_interval * 60))
@@ -636,7 +629,6 @@ static int mqtt_led_init(void)
 //         {
 //             read_redis_resp(current_active);
 //         }
-
 
 //         /* Modbus */
 //         if (current_active && current_active->connected && current_active->client && (now - last_publish_modbus >=
@@ -665,7 +657,6 @@ static int mqtt_led_init(void)
 //                 LOG_ERROR("Failed to generate Modbus JSON");
 //             }
 //         }
-
 
 //         if (current_active)
 //         {
@@ -896,7 +887,6 @@ static int mqtt_led_init(void)
 
 //             pthread_mutex_unlock(&cmd_mutex);
 
-
 //             processServerMsg(current_active, local_cmd);
 //         }
 //         send_hc_msg();
@@ -905,9 +895,6 @@ static int mqtt_led_init(void)
 //         sleep(3);
 //     }
 // }
-
-
-
 
 void *mqtt_worker_thread(void *arg)
 {
@@ -924,7 +911,6 @@ void *mqtt_worker_thread(void *arg)
     last_mqtt2_profile = timer_start;
     last_mqtt2_hc = timer_start;
     last_mqtt2_modbus = timer_start;
-
 
     while (stop_flag)
     {
@@ -974,9 +960,20 @@ void *mqtt_worker_thread(void *arg)
         /* STATE */
         LOG_INFO("[STATE] mqtt1: enabled=%d connected=%d connecting=%d | "
                  "mqtt2: enabled=%d connected=%d connecting=%d",
-                 mqtt1.cfg.enable_mqtt,mqtt1.connected,mqtt1_connecting,
-                 mqtt2.cfg.enable_mqtt,mqtt2.connected,mqtt2_connecting);
-
+                 mqtt1.cfg.enable_mqtt, mqtt1.connected, mqtt1_connecting,
+                 mqtt2.cfg.enable_mqtt, mqtt2.connected, mqtt2_connecting);
+// rithika 25Sept2026
+        if (check_redis_resp == 1)
+        {
+            if (Fetchday_cmd_broker == 0 && mqtt1.connected)
+            {
+                read_redis_resp(&mqtt1);
+            }
+            else if (Fetchday_cmd_broker == 1 && mqtt2.connected)
+            {
+                read_redis_resp(&mqtt2);
+            }
+        }
         /* mqtt1 RETRY */
         if (mqtt1.cfg.enable_mqtt && !mqtt1.connected && !mqtt1_connecting && now - last_mqtt1_try >= mqtt1_RETRY_SEC)
         {
@@ -1076,14 +1073,14 @@ void *mqtt_worker_thread(void *arg)
                     if (p_inst && mqtt1.connected)
                     {
                         LOG_INFO("[PUBLISH] Instantaneous -> mqtt1");
-                        mqtt_send_file(&mqtt1, res.filename,INST_DATA_TOPIC);
+                        mqtt_send_file(&mqtt1, res.filename, INST_DATA_TOPIC);
                     }
                     if (s_inst && mqtt2.connected)
                     {
                         LOG_INFO("[PUBLISH] Instantaneous -> mqtt2");
-                        mqtt_send_file(&mqtt2, res.filename,INST_DATA_TOPIC);
+                        mqtt_send_file(&mqtt2, res.filename, INST_DATA_TOPIC);
                     }
-                    snprintf(file_rem_cmd, sizeof(file_rem_cmd),"rm -f %s", res.filename);
+                    snprintf(file_rem_cmd, sizeof(file_rem_cmd), "rm -f %s", res.filename);
                     system(file_rem_cmd);
                 }
 
@@ -1101,12 +1098,12 @@ void *mqtt_worker_thread(void *arg)
          * METER PROFILE
          * ========================================================= */
         bool p_profile = mqtt1.connected &&
-            now - last_mqtt1_profile >=
-            mqtt1.cfg.dlms_data_pub_interval * 60;
+                         now - last_mqtt1_profile >=
+                             mqtt1.cfg.dlms_data_pub_interval * 60;
 
         bool s_profile = mqtt2.connected &&
-            now - last_mqtt2_profile >=
-            mqtt2.cfg.dlms_data_pub_interval * 60;
+                         now - last_mqtt2_profile >=
+                             mqtt2.cfg.dlms_data_pub_interval * 60;
 
         if (p_profile || s_profile)
         {
@@ -1120,7 +1117,7 @@ void *mqtt_worker_thread(void *arg)
             for (int i = 0; i < meter_count; i++)
             {
                 cdf_result_t res =
-                    generate_profile_json(ctx,meter_serials[i],today_date,"all");
+                    generate_profile_json(ctx, meter_serials[i], today_date, "all");
 
                 if (res.status == 0)
                 {
@@ -1159,12 +1156,12 @@ void *mqtt_worker_thread(void *arg)
          * HEALTH CHECK
          * ========================================================= */
         bool p_hc = mqtt1.connected &&
-            now - last_mqtt1_hc >=
-            mqtt1.cfg.hc_pub_interval * 60;
+                    now - last_mqtt1_hc >=
+                        mqtt1.cfg.hc_pub_interval * 60;
 
         bool s_hc = mqtt2.connected &&
-            now - last_mqtt2_hc >=
-            mqtt2.cfg.hc_pub_interval * 60;
+                    now - last_mqtt2_hc >=
+                        mqtt2.cfg.hc_pub_interval * 60;
 
         if (p_hc || s_hc)
         {
@@ -1172,17 +1169,17 @@ void *mqtt_worker_thread(void *arg)
             int file_size = 0;
 
             // build_health_status_xml(ctx,xml_buf,sizeof(xml_buf),&file_size);
-            build_health_status_json(ctx,xml_buf,sizeof(xml_buf),&file_size);
+            build_health_status_json(ctx, xml_buf, sizeof(xml_buf), &file_size);
             if (p_hc && mqtt1.connected)
             {
                 LOG_INFO("[PUBLISH] Health -> mqtt1");
-                mqtt_send_msg(&mqtt1,xml_buf,file_size,HEALTH_DATA_TOPIC);
+                mqtt_send_msg(&mqtt1, xml_buf, file_size, HEALTH_DATA_TOPIC);
             }
 
             if (s_hc && mqtt2.connected)
             {
                 LOG_INFO("[PUBLISH] Health -> mqtt2");
-                mqtt_send_msg(&mqtt2,xml_buf,file_size,HEALTH_DATA_TOPIC);
+                mqtt_send_msg(&mqtt2, xml_buf, file_size, HEALTH_DATA_TOPIC);
             }
 
             if (p_hc)
@@ -1196,12 +1193,12 @@ void *mqtt_worker_thread(void *arg)
          * MODBUS
          * ========================================================= */
         bool p_modbus = mqtt1.connected &&
-            now - last_mqtt1_modbus >=
-            mqtt1.cfg.modbus_data_pub_interval * 60;
+                        now - last_mqtt1_modbus >=
+                            mqtt1.cfg.modbus_data_pub_interval * 60;
 
         bool s_modbus = mqtt2.connected &&
-            now - last_mqtt2_modbus >=
-            mqtt2.cfg.modbus_data_pub_interval * 60;
+                        now - last_mqtt2_modbus >=
+                            mqtt2.cfg.modbus_data_pub_interval * 60;
 
         if (p_modbus || s_modbus)
         {
@@ -1211,13 +1208,13 @@ void *mqtt_worker_thread(void *arg)
                 if (p_modbus && mqtt1.connected)
                 {
                     LOG_INFO("[PUBLISH] Modbus -> mqtt1");
-                    mqtt_send_msg(&mqtt1,json,strlen(json),MODBUS_DATA_TOPIC);
+                    mqtt_send_msg(&mqtt1, json, strlen(json), MODBUS_DATA_TOPIC);
                 }
 
                 if (s_modbus && mqtt2.connected)
                 {
                     LOG_INFO("[PUBLISH] Modbus -> mqtt2");
-                    mqtt_send_msg(&mqtt2,json,strlen(json),MODBUS_DATA_TOPIC);
+                    mqtt_send_msg(&mqtt2, json, strlen(json), MODBUS_DATA_TOPIC);
                 }
 
                 free(json);
@@ -1241,37 +1238,37 @@ void *mqtt_worker_thread(void *arg)
 
         if (mqtt1.connected)
         {
-            long modbus_rem  = mqtt1.cfg.modbus_data_pub_interval * 60 - (now - last_mqtt1_modbus);
-            long hc_rem      = mqtt1.cfg.hc_pub_interval * 60 - (now - last_mqtt1_hc);
+            long modbus_rem = mqtt1.cfg.modbus_data_pub_interval * 60 - (now - last_mqtt1_modbus);
+            long hc_rem = mqtt1.cfg.hc_pub_interval * 60 - (now - last_mqtt1_hc);
             long profile_rem = mqtt1.cfg.dlms_data_pub_interval * 60 - (now - last_mqtt1_profile);
-            long inst_rem    = mqtt1.cfg.dlms_inst_pub_interval * 60 - (now - last_mqtt1_inst);
+            long inst_rem = mqtt1.cfg.dlms_inst_pub_interval * 60 - (now - last_mqtt1_inst);
 
             LOG_INFO("┌─────────────────────────────────────────────────────────┐");
             LOG_INFO("│ MQTT1                                                   │");
             LOG_INFO("│ Modbus-->%02ld min %02ld sec    HC-->%02ld min %02ld sec │",
-                    modbus_rem / 60, modbus_rem % 60,
-                    hc_rem / 60, hc_rem % 60);
+                     modbus_rem / 60, modbus_rem % 60,
+                     hc_rem / 60, hc_rem % 60);
             LOG_INFO("│ Profile-->%02ld min %02ld sec   Instant-->%02ld min %02ld sec │",
-                    profile_rem / 60, profile_rem % 60,
-                    inst_rem / 60, inst_rem % 60);
+                     profile_rem / 60, profile_rem % 60,
+                     inst_rem / 60, inst_rem % 60);
             LOG_INFO("└─────────────────────────────────────────────────────────┘");
         }
 
         if (mqtt2.connected)
         {
-            long modbus_rem  = mqtt2.cfg.modbus_data_pub_interval * 60 - (now - last_mqtt2_modbus);
-            long hc_rem      = mqtt2.cfg.hc_pub_interval * 60 - (now - last_mqtt2_hc);
+            long modbus_rem = mqtt2.cfg.modbus_data_pub_interval * 60 - (now - last_mqtt2_modbus);
+            long hc_rem = mqtt2.cfg.hc_pub_interval * 60 - (now - last_mqtt2_hc);
             long profile_rem = mqtt2.cfg.dlms_data_pub_interval * 60 - (now - last_mqtt2_profile);
-            long inst_rem    = mqtt2.cfg.dlms_inst_pub_interval * 60 - (now - last_mqtt2_inst);
+            long inst_rem = mqtt2.cfg.dlms_inst_pub_interval * 60 - (now - last_mqtt2_inst);
 
             LOG_INFO("┌─────────────────────────────────────────────────────────┐");
             LOG_INFO("│ MQTT2                                                   │");
             LOG_INFO("│ Modbus-->%02ld min %02ld sec    HC-->%02ld min %02ld sec │",
-                    modbus_rem / 60, modbus_rem % 60,
-                    hc_rem / 60, hc_rem % 60);
+                     modbus_rem / 60, modbus_rem % 60,
+                     hc_rem / 60, hc_rem % 60);
             LOG_INFO("│ Profile-->%02ld min %02ld sec    Instant-->%02ld min %02ld sec │",
-                    profile_rem / 60, profile_rem % 60,
-                    inst_rem / 60, inst_rem % 60);
+                     profile_rem / 60, profile_rem % 60,
+                     inst_rem / 60, inst_rem % 60);
             LOG_INFO("└─────────────────────────────────────────────────────────┘");
         }
 
@@ -1284,15 +1281,15 @@ void *mqtt_worker_thread(void *arg)
 
             redisReply *rly;
 
-            rly = redisCommand(ctx,"HSET %s connection_status %s",mqtt1_status_hash,mqtt1.connected ? "connected" : "disconnected");
+            rly = redisCommand(ctx, "HSET %s connection_status %s", mqtt1_status_hash, mqtt1.connected ? "connected" : "disconnected");
             if (rly)
                 freeReplyObject(rly);
 
-            rly = redisCommand(ctx,"HSET %s connection_status %s",mqtt2_status_hash,mqtt2.connected ? "connected" : "disconnected");
+            rly = redisCommand(ctx, "HSET %s connection_status %s", mqtt2_status_hash, mqtt2.connected ? "connected" : "disconnected");
             if (rly)
                 freeReplyObject(rly);
 
-            LOG_INFO("[STATUS] mqtt1=%s mqtt2=%s",mqtt1.connected ? "connected" : "disconnected",mqtt2.connected ? "connected" : "disconnected");
+            LOG_INFO("[STATUS] mqtt1=%s mqtt2=%s", mqtt1.connected ? "connected" : "disconnected", mqtt2.connected ? "connected" : "disconnected");
         }
 
         /* =========================================================
@@ -1308,11 +1305,11 @@ void *mqtt_worker_thread(void *arg)
             {
                 if (mqtt_time_update_last)
                 {
-                    rly = redisCommand(ctx,"HSET %s uptime %s last_message_time %s",mqtt1_status_hash,mqtt_time_uptime,mqtt_time_lastmsg);
+                    rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", mqtt1_status_hash, mqtt_time_uptime, mqtt_time_lastmsg);
                 }
                 else
                 {
-                    rly = redisCommand(ctx,"HSET %s uptime %s",mqtt1_status_hash,mqtt_time_uptime);
+                    rly = redisCommand(ctx, "HSET %s uptime %s", mqtt1_status_hash, mqtt_time_uptime);
                 }
 
                 if (rly)
@@ -1322,11 +1319,11 @@ void *mqtt_worker_thread(void *arg)
             {
                 if (mqtt_time_update_last)
                 {
-                    rly = redisCommand(ctx,"HSET %s uptime %s last_message_time %s",mqtt2_status_hash,mqtt_time_uptime,mqtt_time_lastmsg);
+                    rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", mqtt2_status_hash, mqtt_time_uptime, mqtt_time_lastmsg);
                 }
                 else
                 {
-                    rly = redisCommand(ctx,"HSET %s uptime %s",mqtt2_status_hash,mqtt_time_uptime);
+                    rly = redisCommand(ctx, "HSET %s uptime %s", mqtt2_status_hash, mqtt_time_uptime);
                 }
 
                 if (rly)
@@ -1345,7 +1342,7 @@ void *mqtt_worker_thread(void *arg)
             int broker;
 
             pthread_mutex_lock(&cmd_mutex);
-            strncpy(local_cmd,mqtt_cmd_buffer,sizeof(local_cmd) - 1);
+            strncpy(local_cmd, mqtt_cmd_buffer, sizeof(local_cmd) - 1);
             local_cmd[sizeof(local_cmd) - 1] = '\0';
             broker = mqtt_cmd_broker;
             mqtt_cmd_recv = 0;
@@ -1376,12 +1373,6 @@ void *mqtt_worker_thread(void *arg)
 
     return NULL;
 }
-
-
-
-
-
-
 
 /*Loading MQTT Configuration for Broker1 and Broker2*/
 // void load_mqtt_cfg(const char *hash, mqtt_cfg_t *cfg)
@@ -1656,7 +1647,6 @@ void mqtt_module_start()
 //     LOG_INFO("MQTT cleanup completed");
 // }
 
-
 void mqtt_cleanup()
 {
     LOG_INFO("Cleaning up MQTT connections...");
@@ -1670,15 +1660,15 @@ void mqtt_cleanup()
 
         /* MQTT1 -> disconnected + uptime 0s */
         rly = redisCommand(ctx,
-                            "HSET %s connection_status disconnected uptime 0s",
-                            mqtt1_status_hash);
+                           "HSET %s connection_status disconnected uptime 0s",
+                           mqtt1_status_hash);
         if (rly)
             freeReplyObject(rly);
 
         /* MQTT2 -> disconnected + uptime 0s */
         rly = redisCommand(ctx,
-                            "HSET %s connection_status disconnected uptime 0s",
-                            mqtt2_status_hash);
+                           "HSET %s connection_status disconnected uptime 0s",
+                           mqtt2_status_hash);
         if (rly)
             freeReplyObject(rly);
 
@@ -1726,7 +1716,6 @@ void mqtt_cleanup()
 
     LOG_INFO("MQTT cleanup completed");
 }
-
 
 void handle_signal(int sig)
 {
