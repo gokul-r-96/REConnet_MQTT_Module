@@ -774,6 +774,8 @@ int get_active_broker()
 // }
 
 
+
+
 static void mqtt_led_set(int value)
 {
     FILE *fp = fopen("/sys/class/gpio/gpio87/value", "w");
@@ -783,6 +785,8 @@ static void mqtt_led_set(int value)
     fprintf(fp, "%d", value);
     fclose(fp);
 }
+
+
 
 static int mqtt_led_init(void)
 {
@@ -809,6 +813,9 @@ static int mqtt_led_init(void)
     mqtt_led_set(0);
     return 0;
 }
+
+
+
 
 // static void *mqtt_led_thread_func(void *arg)
 // {

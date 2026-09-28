@@ -2107,7 +2107,7 @@ int read_redis_resp(mqtt_conn_t *conn)
             if (res.status == 0)
             {
                 LOG_INFO("Load Survey Profile Generated Successfully: %s", res.filename);
-                mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
+                mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
 
                 remove(res.filename); /// 01Aug2026
                 LOG_INFO("%s is deleted successfully", res.filename);
@@ -2134,7 +2134,7 @@ int read_redis_resp(mqtt_conn_t *conn)
                 if (res.status == 0)
                 {
                     LOG_INFO("Midnight Profile Generated Successfully: %s", res.filename);
-                    mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
+                    mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
 
                     remove(res.filename); /// 01Aug2026
                     LOG_INFO("%s is deleted successfully", res.filename);
@@ -2165,7 +2165,7 @@ int read_redis_resp(mqtt_conn_t *conn)
                 if (res.status == 0)
                 {
                     LOG_INFO("Event Profile Generated Successfully: %s", res.filename);
-                    mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
+                    mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
 
                     remove(res.filename); /// 01Aug2026
                     LOG_INFO("%s is deleted successfully", res.filename);
@@ -2191,7 +2191,7 @@ int read_redis_resp(mqtt_conn_t *conn)
                 if (res.status == 0)
                 {
                     LOG_INFO("Billing Profile Generated Successfully: %s", res.filename);
-                    mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
+                    mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
 
                     remove(res.filename); /// 01Aug2026
                     LOG_INFO("%s is deleted successfully", res.filename);
@@ -2550,7 +2550,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         if (res.status == 0)
         {
             LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
-            mqtt_send_file(current_active, res.filename, CMD_RESP_TOPIC);
+            mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
 
             // rithika 18Apr2026
             char file_rem_cmd[128];
