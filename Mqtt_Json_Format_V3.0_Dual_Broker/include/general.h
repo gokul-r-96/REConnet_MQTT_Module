@@ -26,7 +26,7 @@
  * ============================================================ */
 
 // #define PAYLOAD_BUFFER_SIZE 16384 // 16 KB --> File chunk size need to be adjusted .
-#define PAYLOAD_BUFFER_SIZE 122880 // 65 KB --> File chunk size need to be adjusted .
+#define PAYLOAD_BUFFER_SIZE 131072// 128 KB --> File chunk size need to be adjusted .
 
 
 /** Redis connection parameters */
@@ -525,9 +525,11 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
 cdf_result_t generate_profile_cdf(redisContext *ctx, const char *serial, const char *date, const char *event_type);
 cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const char *date, const char *event_type);
 cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const char *date);
-cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial, const char *date );
-cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *date);
-cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, const char *date);
+cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial,   const char *start_date, const char *end_date);
+
+// cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *date);
+cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *strt_date, int num_days);
+cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, const char *strt_date, char *end_date, char *event_catgy);
 
 int build_health_status_xml(redisContext *ctx, char *out_buf, size_t out_sz, int *output_file_sz);
 

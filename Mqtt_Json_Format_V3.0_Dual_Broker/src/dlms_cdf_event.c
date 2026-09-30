@@ -6,12 +6,6 @@ extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key,
-                              char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
 
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
@@ -42,30 +36,44 @@ static const EventTypeMap *get_event_type_map(int event_type)
     return NULL;
 }
 
-/**
- * @brief Lookup Event param code, name and unit for a given OBIS from Redis.
- *
- * Reads three sub-hashes from REDIS_HASH_EVENT_OBIS_MAP.
- *
- * @param ctx        Redis context.
- * @param obis       OBIS decimal string.
- * @param code_buf   Output: param code.
- * @param name_buf   Output: param name.
- * @param unit_buf   Output: param unit.
- */
-static void lookup_event_obis_mapping(cJSON *code_root,
-                                       cJSON *name_root,
-                                       cJSON *unit_root,
-                                       const char *obis,
-                                       char *code_buf, size_t code_len,
-                                       char *name_buf, size_t name_len,
-                                       char *unit_buf, size_t unit_len)
-{
-    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
 
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
+/*
+ * Return the calendar date immediately after date (YYYY-MM-DD).
+ * Used for an inclusive start/end date range.
+ */
+static int get_next_date(const char *date, char *next_date, size_t next_len)
+{
+    int year, month, day;
+    struct tm tm_date;
+    time_t t;
+
+    if (!date || !next_date)
+        return -1;
+
+    if (sscanf(date, "%d-%d-%d", &year, &month, &day) != 3)
+        return -1;
+
+    memset(&tm_date, 0, sizeof(tm_date));
+    tm_date.tm_year = year - 1900;
+    tm_date.tm_mon = month - 1;
+    tm_date.tm_mday = day;
+    tm_date.tm_hour = 12;
+
+    t = mktime(&tm_date);
+    if (t == (time_t)-1)
+        return -1;
+
+    tm_date.tm_mday++;
+    t = mktime(&tm_date);
+    if (t == (time_t)-1)
+        return -1;
+
+    snprintf(next_date, next_len, "%04d-%02d-%02d",
+             tm_date.tm_year + 1900,
+             tm_date.tm_mon + 1,
+             tm_date.tm_mday);
+
+    return 0;
 }
 
 /**
@@ -87,7 +95,8 @@ static void lookup_event_obis_mapping(cJSON *code_root,
  * @return            0 on success, -1 on error.
  */
 static int read_event_data(const char *db_path, const MeterStatus *status,
-                           const char *serial, const char *date, const char *event_type,
+                           const char *serial, const char *start_date,
+                           const char *end_date, const char *event_type,
                            redisContext *ctx, EventData *event_data)
 {
     memset(event_data, 0, sizeof(*event_data));
@@ -119,13 +128,14 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
 
     /* Build WHERE clause based on filters */
-    char where_clause[512] = "";
-    int is_date_all = (strcmp(date, "all") == 0);
+    char where_clause[1024] = "";
+    int is_date_all = (strcmp(start_date, "all") == 0);
     int is_event_type_all = (strcmp(event_type, "all") == 0);
 
     if (is_date_all && is_event_type_all)
     {
-        /* All events for current month - use current year-month */
+       
+        /* All events for current month - preserve existing behavior. */
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
         char year_month[8];
@@ -135,22 +145,65 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
     else if (!is_date_all && is_event_type_all)
     {
-        /* All events on a specific date */
-        snprintf(where_clause, sizeof(where_clause),
-                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%'", date);
+      
+        if (end_date && strcmp(end_date, start_date) != 0)
+        {
+            char next_date[16];
+
+            if (get_next_date(end_date, next_date, sizeof(next_date)) != 0)
+            {
+                LOG_ERROR("Invalid end date: %s", end_date);
+                sqlite3_close(db);
+                return -1;
+            }
+
+            /* Inclusive start_date through end_date. */
+            snprintf(where_clause, sizeof(where_clause),
+                     "WHERE \"0_0_1_0_0_255\" >= '%s' "
+                     "AND \"0_0_1_0_0_255\" < '%s'",
+                     start_date, next_date);
+        }
+        else
+        {
+            /* Preserve existing single-date behavior. */
+            snprintf(where_clause, sizeof(where_clause),
+                     "WHERE \"0_0_1_0_0_255\" LIKE '%s%%'", start_date);
+        }
     }
     else if (is_date_all && !is_event_type_all)
     {
-        /* All events of a specific type (no date filter) */
+       
+        /* All events of a specific type (no date filter). */
         snprintf(where_clause, sizeof(where_clause),
                  "WHERE event_type = '%s'", event_type);
     }
     else
     {
-        /* Specific event type on a specific date */
-        snprintf(where_clause, sizeof(where_clause),
-                 "WHERE \"0_0_1_0_0_255\" LIKE '%s%%' AND event_type = '%s'",
-                 date, event_type);
+       
+        if (end_date && strcmp(end_date, start_date) != 0)
+        {
+            char next_date[16];
+
+            if (get_next_date(end_date, next_date, sizeof(next_date)) != 0)
+            {
+                LOG_ERROR("Invalid end date: %s", end_date);
+                sqlite3_close(db);
+                return -1;
+            }
+
+            snprintf(where_clause, sizeof(where_clause),
+                     "WHERE \"0_0_1_0_0_255\" >= '%s' "
+                     "AND \"0_0_1_0_0_255\" < '%s' "
+                     "AND event_type = '%s'",
+                     start_date, next_date, event_type);
+        }
+        else
+        {
+            snprintf(where_clause, sizeof(where_clause),
+                     "WHERE \"0_0_1_0_0_255\" LIKE '%s%%' "
+                     "AND event_type = '%s'",
+                     start_date, event_type);
+        }
     }
 
     /* Build query */
@@ -191,12 +244,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
         return -1;
     }
 
-    /* Fetch+parse Event OBIS maps ONCE for this read, not once per parameter */
-    cJSON *code_root = NULL;
-    cJSON *name_root = NULL;
-    cJSON *unit_root = NULL;
-    fetch_obis_maps(ctx, REDIS_HASH_EVENT_OBIS_MAP,
-                    &code_root, &name_root, &unit_root);
+
 
     int entry_idx = 0;
 
@@ -273,45 +321,44 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
                 continue;
             }
 
-      
+      char obis_hex[24];
 
-            /* Event code column (matches evt_map->obis_code) */
-            if (strcmp(col_name, evt_map->obis_code) == 0)
-            {
-                EventParam *p = &entry->params[param_idx];
-                snprintf(p->obis_code, sizeof(p->obis_code), "%s", col_name);
-                // obis_dec_to_hex(col_name, p->obis_hex, sizeof(p->obis_hex));
-                obis_dec_to_hex(col_name, p->obis_hex);
-                snprintf(p->param_code, sizeof(p->param_code), "");
-                snprintf(p->param_name, sizeof(p->param_name), "");
-                snprintf(p->unit, sizeof(p->unit), "count");
-                snprintf(p->value, sizeof(p->value), "%s", val_str);
-                param_idx++;
-                continue;
-            }
+        if (obis_dec_to_hex(col_name, obis_hex) != 0)
+        {
+            LOG_WARN("Skipping invalid OBIS column: %s", col_name);
+            continue;
+        }
 
-                  printf("COLUMN [%d]: OBIS=[%s] VALUE=[%s]\n",
-       col, col_name, val_str);
-            /* Regular OBIS parameters */
-            char obis_hex[24];
-            if (obis_dec_to_hex(col_name, obis_hex) != 0)
-            {
-                continue;
-            }
+        EventParam *p = &entry->params[param_idx];
 
-            EventParam *p = &entry->params[param_idx];
-            snprintf(p->obis_code, sizeof(p->obis_code), "%s", col_name);
-            snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
-            snprintf(p->value, sizeof(p->value), "%s", val_str);
+        snprintf(p->obis_code,
+                 sizeof(p->obis_code),
+                 "%s",
+                 col_name);
 
-            
-            /* Lookup mapping from Event-specific hash */
-            lookup_event_obis_mapping(code_root, name_root, unit_root, col_name,
-                                       p->param_code, sizeof(p->param_code),
-                                       p->param_name, sizeof(p->param_name),
-                                       p->unit, sizeof(p->unit));
+        snprintf(p->obis_hex,
+                 sizeof(p->obis_hex),
+                 "%s",
+                 obis_hex);
 
-            param_idx++;
+        snprintf(p->value,
+                 sizeof(p->value),
+                 "%s",
+                 val_str);
+
+        /*
+         * No param_code / param_name / unit mapping.
+         * These fields are intentionally left unused.
+         */
+
+        LOG_DEBUG("Event entry[%d] param[%d]: OBIS=%s HEX=%s VALUE=%s",
+                  entry_idx,
+                  param_idx,
+                  p->obis_code,
+                  p->obis_hex,
+                  p->value);
+
+        param_idx++;
         }
 
         entry->param_count = param_idx;
@@ -320,7 +367,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
 
     event_data->entry_count = entry_idx;
 
-    free_obis_maps(code_root, name_root, unit_root);
+ 
 
     sqlite3_finalize(stmt);
 
@@ -433,92 +480,116 @@ static void cdf_write_d5(FILE *fp, redisContext *ctx, const EventData *event_dat
     // if (root)
     //     cJSON_Delete(root);
 }
-
-static void json_write_d5(FILE *fp, redisContext *ctx, const EventData *event_data)
+static void json_write_d5(FILE *fp,
+                          redisContext *ctx,
+                          const EventData *event_data)
 {
     (void)ctx;
+
     fprintf(fp, "    \"EVENT_PROFILE\": {\n");
-    fprintf(fp, "      \"FIELDS\": [\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
+
+    /*
+     * Only OBIS_CODE is present in the JSON structure.
+     */
+    fprintf(fp, "      \"FIELDS\": [\"OBIS_CODE\"],\n");
+
+    /*
+     * PARAMS
+     *
+     * Each SQLite OBIS column is converted to hexadecimal.
+     *
+     * Example:
+     *
+     * SQLite:
+     *     1_0_1_8_0_255
+     *
+     * JSON:
+     *     [\"01_00_01_08_00_ff\"]
+     */
     fprintf(fp, "      \"PARAMS\": [\n");
-    int first = 1;
-    /* Print parameter definitions only once */
-    printf("111111111111 event_data->entry_count %d \n", event_data->entry_count);
+
+    int first_param = 1;
+
     if (event_data->entry_count > 0)
     {
         const EventEntry *entry = &event_data->entries[0];
-        printf("111111111111 entry->param_count %d\n", entry->param_count);
+
         for (int j = 0; j < entry->param_count; j++)
         {
             const EventParam *p = &entry->params[j];
 
-            printf("2222 [%d] value=[%s] param_code=[%s] obis=[%s] param_name=[%s] unit=[%s]\n",
-                   j,
-                   p->value,
-                   p->param_code,
-                   p->obis_hex,
-                   p->param_name,
-                   p->unit);
-
-            if (strcmp(p->value, "FFFFFFFF") == 0)
-                continue;
-            // rithika commented, eventcode is not updating in the json
-                // if (p->param_name[0] == '\0')
-            //     continue;
-            
             if (p->obis_hex[0] == '\0')
                 continue;
 
-            if (!first)
+            if (!first_param)
                 fprintf(fp, ",\n");
-            fprintf(fp,
-                    "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
-                    p->param_code,
-                    p->obis_hex,
-                    p->param_name,
-                    p->unit);
 
-            first = 0;
+            fprintf(fp,
+                    "        [\"%s\"]",
+                    p->obis_hex);
+
+            first_param = 0;
         }
     }
 
     fprintf(fp, "\n");
     fprintf(fp, "      ],\n");
-    fprintf(fp, "      \"VALUES\": [\n");
-    first = 1;
+
+    /*
+     * RECORDS
+     *
+     * Format:
+     *
+     * [
+     *     [
+     *         \"date\",
+     *         [\"value1\", \"value2\", ...]
+     *     ]
+     * ]
+     */
+    fprintf(fp, "      \"RECORDS\": [\n");
+
+    int first_record = 1;
+
     for (int i = 0; i < event_data->entry_count; i++)
     {
         const EventEntry *entry = &event_data->entries[i];
-        if (!first)
+
+        if (!first_record)
             fprintf(fp, ",\n");
 
-        fprintf(fp, "        [\"%s\",[", entry->event_date);
+        fprintf(fp,
+                "        [\"%s\",[",
+                entry->event_date);
+
         int first_value = 1;
+
         for (int j = 0; j < entry->param_count; j++)
         {
             const EventParam *p = &entry->params[j];
-            printf("333 p->value %s\n", p->value);
-            if (strcmp(p->value, "FFFFFFFF") == 0)
-                continue;
-            // if (p->param_name[0] == '\0')
-            //     continue;
+
             if (p->obis_hex[0] == '\0')
                 continue;
-                
+
             if (!first_value)
                 fprintf(fp, ",");
-            fprintf(fp, "\"%s\"", p->value);
+
+            fprintf(fp,
+                    "\"%s\"",
+                    p->value);
+
             first_value = 0;
         }
 
         fprintf(fp, "]]");
-        first = 0;
+
+        first_record = 0;
     }
 
     fprintf(fp, "\n");
     fprintf(fp, "      ]\n");
     fprintf(fp, "    }\n");
 }
-
 /**
  * @brief Generate a CDF file for Event Log data (data type 5).
  *
@@ -558,7 +629,9 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
 
     /* 2. Read Event data from SQLite */
     EventData event_data;
-    if (read_event_data(sqlite_db_path, &status, serial, date, event_type,
+    memset(&event_data, 0, sizeof(event_data));
+
+    if (read_event_data(sqlite_db_path, &status, serial, date, date, event_type,
                         ctx, &event_data) != 0)
     {
         LOG_ERROR("Cannot read event data for meter %s", serial);
@@ -615,10 +688,12 @@ int generate_event_log_cdf(redisContext *ctx, const char *serial,
     return 0;
 }
 
-int generate_event_log_json(redisContext *ctx, const char *serial, const char *date, const char *event_type, char *output_file)
+int generate_event_log_json(redisContext *ctx, const char *serial,
+                            const char *start_date, const char *end_date,
+                            const char *event_type, char *output_file)
 {
-    LOG_INFO("Generating Event Log JSON for meter %s date=%s event_type=%s",
-             serial, date, event_type);
+    LOG_INFO("Generating Event Log JSON for meter %s start=%s end=%s event_type=%s",
+             serial, start_date, end_date, event_type);
     /* 1. Read meter status from Redis */
     MeterStatus status;
     if (read_meter_status(ctx, serial, &status) != 0)
@@ -638,7 +713,10 @@ int generate_event_log_json(redisContext *ctx, const char *serial, const char *d
     }
     /* 2. Read Event data */
     EventData event_data;
-    if (read_event_data(sqlite_db_path, &status, serial, date, event_type, ctx, &event_data) != 0)
+    memset(&event_data, 0, sizeof(event_data));
+    
+    if (read_event_data(sqlite_db_path, &status, serial, start_date, end_date,
+                         event_type, ctx, &event_data) != 0)
     {
         LOG_ERROR("Cannot read event data for meter %s", serial);
     }
@@ -655,7 +733,9 @@ int generate_event_log_json(redisContext *ctx, const char *serial, const char *d
     char base_path[256];
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
-        snprintf(out_path, sizeof(out_path), "%s/data/EVENT_%s_%s_%s.json", base_path, serial, date, event_type);
+        snprintf(out_path, sizeof(out_path),
+              "%s/data/EVENT_%s_%s_%s_%s.json",
+              base_path, serial, start_date, end_date, event_type);
     }
     FILE *fp = fopen(out_path, "w");
     if (!fp)

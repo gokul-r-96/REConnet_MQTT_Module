@@ -7,52 +7,19 @@ extern int event_cmd_redis_resp;
 extern int ls_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS map cache helpers */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key,
-                              char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
-
 // rithika 13Aug2026
 int int_cur_month = 0;
-
+extern int multi_month_billing;
 /* ============================================================
  *  Billing data helpers
  * ============================================================ */
-
-/**
- * @brief Lookup Billing param code, name and unit for a given OBIS from Redis.
- *
- * Reads three sub-hashes from REDIS_HASH_BILL_OBIS_MAP.
- *
- * @param ctx        Redis context.
- * @param obis       OBIS decimal string.
- * @param code_buf   Output: param code.
- * @param name_buf   Output: param name.
- * @param unit_buf   Output: param unit.
- */
-static void lookup_bill_obis_mapping(cJSON *code_root,
-                                     cJSON *name_root,
-                                     cJSON *unit_root,
-                                     const char *obis,
-                                     char *code_buf, size_t code_len,
-                                     char *name_buf, size_t name_len,
-                                     char *unit_buf, size_t unit_len)
-{
-    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
-
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
-}
 
 /**
  * @brief Read Billing data for a specific year-month from SQLite database.
  *
  * Opens the database, queries the table "bill_data_<manuf>_<dcu>_<port>_<serial>"
  * for all records matching the specified year-month (column "bill_date"),
- * ordered by bill_date ascending. Maximum 2 entries per month.
+ * ordered by bill_date ascending. All matching entries are loaded.
  *
  * @param db_path     Path to SQLite database.
  * @param status      Meter status (contains table name components).
@@ -100,8 +67,8 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
     /* Query all billing records for the specified year-month */
     char query[512];
     snprintf(query, sizeof(query),
-             "SELECT * FROM %s WHERE  bill_date like '%s' "
-             "ORDER BY bill_date ASC LIMIT 2",
+             "SELECT * FROM %s WHERE bill_date like '%s' "
+             "ORDER BY bill_date ASC",
              table, year_month);
 
     LOG_DEBUG("SQL query: %s", query);
@@ -118,8 +85,8 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
     int col_count = sqlite3_column_count(stmt);
     LOG_INFO("Query returned %d columns", col_count);
 
-    /* Allocate for up to 2 billing entries */
-    bill_data->entries = (BillingEntry *)calloc(2, sizeof(BillingEntry));
+    /* Allocate the first entry; grow dynamically for additional billing dates. */
+    bill_data->entries = (BillingEntry *)calloc(1, sizeof(BillingEntry));
     if (!bill_data->entries)
     {
         LOG_ERROR("Memory allocation failed for BillingEntry array");
@@ -128,19 +95,30 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
         return -1;
     }
 
-    /* Fetch Billing OBIS maps once instead of doing Redis HGETs for every parameter */
-    cJSON *code_root = NULL;
-    cJSON *name_root = NULL;
-    cJSON *unit_root = NULL;
-    fetch_obis_maps(ctx, REDIS_HASH_BILL_OBIS_MAP,
-                    &code_root, &name_root, &unit_root);
-
     int entry_idx = 0;
 
-    /* Iterate over result rows (max 2) */
-    while (sqlite3_step(stmt) == SQLITE_ROW && entry_idx < 2)
+    /* Read all billing rows for this month. */
+    while (sqlite3_step(stmt) == SQLITE_ROW)
     {
-        BillingEntry *entry = &bill_data->entries[entry_idx];
+        BillingEntry *entry;
+
+        if (entry_idx > 0)
+        {
+            BillingEntry *tmp = (BillingEntry *)realloc(
+                bill_data->entries,
+                (entry_idx + 1) * sizeof(BillingEntry));
+
+            if (!tmp)
+            {
+                LOG_ERROR("Memory allocation failed for BillingEntry array");
+                break;
+            }
+
+            bill_data->entries = tmp;
+            memset(&bill_data->entries[entry_idx], 0, sizeof(BillingEntry));
+        }
+
+        entry = &bill_data->entries[entry_idx];
 
         /* Allocate for parameters */
         entry->params = (BillParam *)calloc(col_count, sizeof(BillParam));
@@ -198,15 +176,8 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from Billing-specific hash */
-            lookup_bill_obis_mapping(code_root, name_root, unit_root, obis,
-                                     p->param_code, sizeof(p->param_code),
-                                     p->param_name, sizeof(p->param_name),
-                                     p->unit, sizeof(p->unit));
-
-            LOG_DEBUG("Bill entry[%d] param[%d]: obis=%s hex=%s code=%s name=%s unit=%s val=%s",
-                      entry_idx, param_idx, p->obis_code, p->obis_hex, p->param_code,
-                      p->param_name, p->unit, p->value);
+            LOG_DEBUG("Bill entry[%d] param[%d]: obis=%s hex=%s val=%s",
+                      entry_idx, param_idx, p->obis_code, p->obis_hex, p->value);
 
             param_idx++;
         }
@@ -217,14 +188,12 @@ static int read_billing_data(const char *db_path, const MeterStatus *status,
 
     bill_data->entry_count = entry_idx;
 
-    free_obis_maps(code_root, name_root, unit_root);
-
     sqlite3_finalize(stmt);
 
     // rithika 12Aug2026
     // if (billing_cmd_redis_resp == 0 && od_table[0] != '\0')
     // {
-    if (int_cur_month == 0)
+    if (int_cur_month == 0 && multi_month_billing == 0)
     {
         LOG_INFO("Deleting od table %s", od_table);
         drop_table(od_table, db);
@@ -378,34 +347,30 @@ static void json_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_d
 {
     (void)ctx;
     fprintf(fp, "    \"BILLING_PROFILE\": {\n");
-    fprintf(fp, "      \"FIELDS\":[\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
+    fprintf(fp, "      \"FIELDS\":[\"OBIS_CODE\"],\n");
     fprintf(fp, "      \"PARAMS\":[\n");
-    /* Print parameter definitions only once */
+
+    /* Print OBIS codes from SQLite columns only, in hexadecimal form. */
     if (bill_data->entry_count > 0)
     {
         const BillingEntry *entry = &bill_data->entries[0];
         int first = 1;
+
         for (int j = 0; j < entry->param_count; j++)
         {
             const BillParam *p = &entry->params[j];
-            if (p->param_name[0] == '\0')
-                continue;
+
             if (!first)
                 fprintf(fp, ",\n");
-            fprintf(fp,
-                    "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
-                    p->param_code,
-                    p->obis_hex,
-                    p->param_name,
-                    p->unit);
 
+            fprintf(fp, "        [\"%s\"]", p->obis_hex);
             first = 0;
         }
     }
 
     fprintf(fp, "\n");
     fprintf(fp, "      ],\n");
-    fprintf(fp, "      \"VALUES\":[\n");
+    fprintf(fp, "      \"RECORDS\":[\n");
 
     int first_record = 1;
 
@@ -413,20 +378,20 @@ static void json_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_d
     for (int i = 0; i < bill_data->entry_count; i++)
     {
         const BillingEntry *entry = &bill_data->entries[i];
+
         if (!first_record)
             fprintf(fp, ",\n");
 
         fprintf(fp, "        [\"%s\",[", entry->billing_date);
-        int first_value = 1;
+
         for (int j = 0; j < entry->param_count; j++)
         {
             const BillParam *p = &entry->params[j];
-            if (p->param_name[0] == '\0')
-                continue;
-            if (!first_value)
+
+            if (j > 0)
                 fprintf(fp, ",");
+
             fprintf(fp, "\"%s\"", p->value);
-            first_value = 0;
         }
 
         fprintf(fp, "]]");
@@ -437,20 +402,20 @@ static void json_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_d
     for (int i = 0; i < bill_data_curr->entry_count; i++)
     {
         const BillingEntry *entry = &bill_data_curr->entries[i];
+
         if (!first_record)
             fprintf(fp, ",\n");
 
         fprintf(fp, "        [\"%s\",[", entry->billing_date);
-        int first_value = 1;
+
         for (int j = 0; j < entry->param_count; j++)
         {
             const BillParam *p = &entry->params[j];
-            if (p->param_name[0] == '\0')
-                continue;
-            if (!first_value)
+
+            if (j > 0)
                 fprintf(fp, ",");
+
             fprintf(fp, "\"%s\"", p->value);
-            first_value = 0;
         }
 
         fprintf(fp, "]]");
@@ -466,7 +431,7 @@ static void json_write_d3(FILE *fp, redisContext *ctx, const BillingData *bill_d
  * @brief Generate a CDF file for Billing data (data type 3).
  *
  * Requires a year-month argument in argv[3] (YYYY-MM format).
- * Billing data can have up to 2 entries per month.
+ * Billing data can contain multiple entries per month.
  *
  * @param ctx         Redis context.
  * @param serial      Meter serial number.
@@ -482,7 +447,6 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     char curr_year[32] = {0};
     char month[32];
     char str_year[8];
-    
 
     strftime(month, sizeof(month), "%b", curr_date);
     strftime(str_year, sizeof(str_year), "%Y", curr_date);
@@ -505,7 +469,6 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
         int year;
         sscanf(year_month, "%*s %d", &year);
         sprintf(curr_year, "curr mon %d", year);
-        
     }
     LOG_INFO("date %s, year_month %s curr_year %s", date, year_month, curr_year);
 
@@ -542,7 +505,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
 
     if (strstr(curr_year, "curr mon "))
     {
-     
+
         if (read_billing_data(sqlite_db_path, &status, serial, curr_year, ctx, &bill_data_curr) != 0)
         {
             LOG_ERROR("Cannot read billing data for meter %s year-month %s", serial, curr_year);
@@ -603,7 +566,7 @@ int generate_billing_cdf(redisContext *ctx, const char *serial, const char *year
     return 0;
 }
 
-int generate_billing_json(redisContext *ctx, const char *serial, const char *year_month, char *output_file)
+static int generate_billing_json_single_month(redisContext *ctx, const char *serial, const char *year_month, char *output_file)
 {
     time_t now = time(NULL);
     struct tm *curr_date = localtime(&now);
@@ -612,7 +575,7 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
 
     char month[32];
     char str_year[8];
- int_cur_month = 0;
+    int_cur_month = 0;
 
     strftime(month, sizeof(month), "%b", curr_date);
     strftime(str_year, sizeof(str_year), "%Y", curr_date);
@@ -745,6 +708,346 @@ int generate_billing_json(redisContext *ctx, const char *serial, const char *yea
 
     LOG_INFO("Billing JSON written: %s", out_path);
     printf("JSON file generated: %s\n", out_path);
+
+    return 0;
+}
+/*
+ * Append BillingEntry objects to a combined BillingData structure.
+ * Ownership of each entry->params is transferred to dst.
+ */
+static int billing_data_append(BillingData *dst, BillingData *src, int max_entries)
+{
+    int i;
+    int old_count;
+    int add_count;
+    BillingEntry *tmp;
+
+    if (!dst || !src || !src->entries || src->entry_count <= 0)
+        return 0;
+
+    add_count = src->entry_count;
+    if (max_entries > 0 && add_count > max_entries)
+        add_count = max_entries;
+
+    old_count = dst->entry_count;
+
+    tmp = (BillingEntry *)realloc(dst->entries,
+                                  (old_count + add_count) * sizeof(BillingEntry));
+    if (!tmp)
+    {
+        LOG_ERROR("Failed to expand combined BillingData for %d entries", add_count);
+        return -1;
+    }
+
+    dst->entries = tmp;
+
+    for (i = 0; i < add_count; i++)
+    {
+        dst->entries[old_count + i] = src->entries[i];
+        src->entries[i].params = NULL;
+    }
+
+    dst->entry_count = old_count + add_count;
+    return add_count;
+}
+
+/*
+ * Generate ONE billing JSON file for the complete requested month range.
+ *
+ * start_date / end_date format:
+ *     "MM_YYYY"
+ *
+ * Example:
+ *     start_date = "07_2026"
+ *     end_date   = "09_2026"
+ *
+ * For normal months:
+ *     all billing rows in that month are copied.
+ *
+ * For the current month:
+ *     1. First billing entry of the month is copied from the normal month table.
+ *     2. Current-date billing entry is copied from the existing "curr mon YYYY" data.
+ *
+ * All records are written into one JSON file.
+ */
+int generate_billing_json(redisContext *ctx,
+                          const char *serial,
+                          const char *start_date,
+                          const char *end_date,
+                          char *output_file)
+{
+    int start_month, start_year;
+    int end_month, end_year;
+    int year, month;
+    int generated_entries = 0;
+    int current_tm_month;
+    int current_tm_year;
+    time_t now;
+    struct tm *curr_date;
+    char dt_str[32];
+    char base_path[256];
+    char out_path[512];
+    char bill_date[64];
+    char curr_year[64];
+    const char *months[] = {
+        "", "Jan", "Feb", "Mar", "Apr", "May", "June",
+        "July", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+    BillingData all_bill_data;
+    memset(&all_bill_data, 0, sizeof(all_bill_data));
+
+    if (!ctx || !serial || !start_date || !end_date)
+    {
+        LOG_ERROR("Invalid argument to generate_billing_json");
+        return -1;
+    }
+
+    if (sscanf(start_date, "%d_%d", &start_month, &start_year) != 2)
+    {
+        LOG_ERROR("Invalid start billing date format: %s", start_date);
+        return -1;
+    }
+
+    if (sscanf(end_date, "%d_%d", &end_month, &end_year) != 2)
+    {
+        LOG_ERROR("Invalid end billing date format: %s", end_date);
+        return -1;
+    }
+
+    if (start_month < 1 || start_month > 12 ||
+        end_month < 1 || end_month > 12)
+    {
+        LOG_ERROR("Invalid month: start=%d end=%d", start_month, end_month);
+        return -1;
+    }
+
+    if (start_year > end_year ||
+        (start_year == end_year && start_month > end_month))
+    {
+        LOG_ERROR("Start billing date %s is after end billing date %s",
+                  start_date, end_date);
+        return -1;
+    }
+
+    now = time(NULL);
+    curr_date = localtime(&now);
+    if (!curr_date)
+    {
+        LOG_ERROR("Unable to get current date");
+        return -1;
+    }
+
+    current_tm_month = curr_date->tm_mon + 1;
+    current_tm_year = curr_date->tm_year + 1900;
+
+    /* Keep the OD table until the complete range has been read. */
+    multi_month_billing = 1;
+
+    /*
+     * The loop above is intentionally not used for the actual read because
+     * read_billing_data() requires the MeterStatus. Obtain it once here.
+     */
+    {
+        MeterStatus status;
+        char base_path_dir[256];
+        char sqlite_db_path[256];
+
+        memset(&status, 0, sizeof(status));
+        memset(base_path_dir, 0, sizeof(base_path_dir));
+        memset(sqlite_db_path, 0, sizeof(sqlite_db_path));
+
+        if (read_meter_status(ctx, serial, &status) != 0)
+        {
+            LOG_ERROR("Cannot read meter status for meter %s", serial);
+            multi_month_billing = 0;
+            return -1;
+        }
+
+        if (get_base_path(base_path_dir, sizeof(base_path_dir)) != 0)
+        {
+            LOG_ERROR("Cannot get DCU base path");
+            multi_month_billing = 0;
+            return -1;
+        }
+
+        snprintf(sqlite_db_path, sizeof(sqlite_db_path),
+                 "%s/data/dcu_dlms.db", base_path_dir);
+
+        year = start_year;
+        month = start_month;
+
+        while (year < end_year ||
+               (year == end_year && month <= end_month))
+        {
+            BillingData month_data;
+            BillingData current_data;
+            int is_current_month;
+            int rc;
+
+            memset(&month_data, 0, sizeof(month_data));
+            memset(&current_data, 0, sizeof(current_data));
+
+            snprintf(bill_date, sizeof(bill_date), "%s %d", months[month], year);
+
+            is_current_month = (year == current_tm_year &&
+                                month == current_tm_month);
+
+            LOG_INFO("Generating combined billing data for meter %s: %s%s",
+                     serial,
+                     bill_date,
+                     is_current_month ? " (CURRENT MONTH)" : "");
+
+            /* Allow normal OD-table cleanup after all range reads are complete. */
+            if (!is_current_month && month == end_month)
+            {
+                multi_month_billing = 0;
+            }
+
+            rc = read_billing_data(sqlite_db_path,
+                                   &status,
+                                   serial,
+                                   bill_date,
+                                   ctx,
+                                   &month_data);
+
+            if (rc == 0 && month_data.entry_count > 0)
+            {
+                if (is_current_month)
+                {
+                    /* Current month: only the FIRST date from the normal table. */
+                    if (billing_data_append(&all_bill_data, &month_data, 1) > 0)
+                    {
+                        generated_entries++;
+                        LOG_INFO("Added first billing entry for current month %s",
+                                 bill_date);
+                    }
+                }
+                else
+                {
+                    /* Previous months: copy ALL available billing dates. */
+                    int added = billing_data_append(&all_bill_data,
+                                                    &month_data,
+                                                    0);
+                    if (added > 0)
+                    {
+                        generated_entries += added;
+                        LOG_INFO("Added %d billing entries for %s",
+                                 added, bill_date);
+                    }
+                }
+            }
+            else
+            {
+                LOG_WARN("No billing data found for meter %s in %s",
+                         serial, bill_date);
+            }
+
+            billing_data_free(&month_data);
+
+            if (is_current_month)
+            {
+                /*
+                 * Existing current-month mechanism stores the current-date
+                 * record using the key "curr mon YYYY".
+                 */
+                snprintf(curr_year, sizeof(curr_year),
+                         "curr mon %d", year);
+
+                /* Allow normal OD-table cleanup after all range reads are complete. */
+
+                multi_month_billing = 0;
+
+                if (read_billing_data(sqlite_db_path,
+                                      &status,
+                                      serial,
+                                      curr_year,
+                                      ctx,
+                                      &current_data) == 0 &&
+                    current_data.entry_count > 0)
+                {
+                    /* Add exactly one current-date entry. */
+                    if (billing_data_append(&all_bill_data,
+                                            &current_data,
+                                            1) > 0)
+                    {
+                        generated_entries++;
+                        LOG_INFO("Added current-date billing entry for %s",
+                                 bill_date);
+                    }
+                }
+                else
+                {
+                    LOG_WARN("Current-date billing entry not found for meter %s (%s)",
+                             serial, curr_year);
+                }
+
+                billing_data_free(&current_data);
+            }
+
+            month++;
+            if (month > 12)
+            {
+                month = 1;
+                year++;
+            }
+        }
+    }
+
+    if (generated_entries == 0 || all_bill_data.entry_count == 0)
+    {
+        LOG_ERROR("No billing data found for meter %s from %s to %s",
+                  serial, start_date, end_date);
+        // billing_data_free(&all_bill_data);
+        // return -1;
+    }
+
+    if (get_base_path(base_path, sizeof(base_path)) != 0)
+    {
+        LOG_ERROR("Cannot get DCU base path for billing JSON output");
+        billing_data_free(&all_bill_data);
+        return -1;
+    }
+
+    snprintf(out_path, sizeof(out_path),
+             "%s/data/BILL_%s_%s_to_%s.json",
+             base_path, serial, start_date, end_date);
+
+    get_datetime_str(dt_str, sizeof(dt_str));
+
+    {
+        FILE *fp = fopen(out_path, "w");
+        if (!fp)
+        {
+            LOG_ERROR("Cannot open output file: %s (%s)",
+                      out_path, strerror(errno));
+            billing_data_free(&all_bill_data);
+            return -1;
+        }
+
+        json_write_header(fp, "BILLING_DATA_MESSAGE");
+        json_write_general(ctx, fp, serial, dt_str);
+        json_write_d1(fp, ctx, serial);
+
+        /* All requested months are now in one BillingData structure. */
+        {
+            BillingData empty_current;
+            memset(&empty_current, 0, sizeof(empty_current));
+            json_write_d3(fp, ctx, &all_bill_data, &empty_current);
+        }
+
+        json_write_footer(fp);
+        fclose(fp);
+    }
+
+    billing_data_free(&all_bill_data);
+
+    strcpy(output_file, out_path);
+
+    LOG_INFO("Combined Billing JSON written: %s entries=%d",
+             out_path, generated_entries);
+
+    printf("JSON file generated: %s entries=%d\n",
+           output_file, generated_entries);
 
     return 0;
 }

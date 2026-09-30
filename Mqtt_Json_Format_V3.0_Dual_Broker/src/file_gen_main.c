@@ -24,6 +24,12 @@ extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 extern int get_day_cmd;
+extern int check_redis_resp;
+
+extern cmd_request_t cpy_cmd;
+extern int seq_num;
+
+ int multi_month_billing = 0;
 /**
  * @brief Return current date string (for filenames/CDF DATE attribute).
  * @param buf    Output buffer.
@@ -159,6 +165,8 @@ int parse_obis_map(const char *json_str, const char *obis_key,
     return rc;
 }
 
+
+
 /**
  * @brief Lookup param code, name and unit for a given OBIS from Redis.
  *
@@ -172,10 +180,10 @@ int parse_obis_map(const char *json_str, const char *obis_key,
  */
 /* Cached OBIS mapping helpers */
 void fetch_obis_maps(redisContext *ctx,
-                            const char *hash,
-                            cJSON **code_root,
-                            cJSON **name_root,
-                            cJSON **unit_root)
+                     const char *hash,
+                     cJSON **code_root,
+                     cJSON **name_root,
+                     cJSON **unit_root)
 {
     *code_root = *name_root = *unit_root = NULL;
 
@@ -203,9 +211,9 @@ void fetch_obis_maps(redisContext *ctx,
 }
 
 void lookup_obis_value(cJSON *root,
-                              const char *obis_key,
-                              char *out_buf,
-                              size_t out_len)
+                       const char *obis_key,
+                       char *out_buf,
+                       size_t out_len)
 {
     out_buf[0] = '\0';
 
@@ -216,18 +224,6 @@ void lookup_obis_value(cJSON *root,
 
     if (cJSON_IsString(item) && item->valuestring)
         snprintf(out_buf, out_len, "%s", item->valuestring);
-}
-
-void free_obis_maps(cJSON *code_root,
-                           cJSON *name_root,
-                           cJSON *unit_root)
-{
-    if (code_root)
-        cJSON_Delete(code_root);
-    if (name_root)
-        cJSON_Delete(name_root);
-    if (unit_root)
-        cJSON_Delete(unit_root);
 }
 
 static void lookup_obis_mapping(cJSON *code_root,
@@ -243,6 +239,19 @@ static void lookup_obis_mapping(cJSON *code_root,
     lookup_obis_value(unit_root, obis, unit_buf, unit_len);
 }
 
+void free_obis_maps(cJSON *code_root,
+                    cJSON *name_root,
+                    cJSON *unit_root)
+{
+    if (code_root)
+        cJSON_Delete(code_root);
+    if (name_root)
+        cJSON_Delete(name_root);
+    if (unit_root)
+        cJSON_Delete(unit_root);
+}
+
+
 /* ============================================================
  *  Instantaneous data: Redis → InstSnapshot
  * ============================================================ */
@@ -250,8 +259,8 @@ static void lookup_obis_mapping(cJSON *code_root,
 /**
  * @brief Read instantaneous meter data from Redis and populate an InstSnapshot.
  *
- * Reads the JSON stored at field "meter_0_1_<serial>" inside the
- * REDIS_HASH_INST_INFO hash, then resolves OBIS → param mappings.
+ * Reads the JSON stored in REDIS_HASH_INST_INFO and uses the
+ * obis_list/val_list directly. No OBIS parameter mapping is performed.
  *
  * @param ctx        Redis context.
  * @param serial     Meter serial number string.
@@ -347,14 +356,6 @@ static int read_instantaneous_data(redisContext *ctx,
         return -1;
     }
 
-    /* Fetch OBIS maps once instead of querying Redis for every parameter. */
-    cJSON *code_root = NULL;
-    cJSON *name_root = NULL;
-    cJSON *unit_root = NULL;
-
-    fetch_obis_maps(ctx, REDIS_HASH_OBIS_MAP,
-                    &code_root, &name_root, &unit_root);
-
     int val_count = cJSON_GetArraySize(val_arr);
     int param_idx = 0;
 
@@ -394,21 +395,20 @@ static int read_instantaneous_data(redisContext *ctx,
         snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
         snprintf(p->value, sizeof(p->value), "%s", val);
 
-        /* Resolve name, code, unit from Redis mapping hash */
-        lookup_obis_mapping(code_root, name_root, unit_root, obis,
-                            p->param_code, sizeof(p->param_code),
-                            p->param_name, sizeof(p->param_name),
-                            p->unit, sizeof(p->unit));
+        /* No OBIS mapping for instantaneous data.
+         * Keep the OBIS and value exactly from obis_list/val_list.
+         * param_code, param_name and unit remain empty. */
+        p->param_code[0] = '\0';
+        p->param_name[0] = '\0';
+        p->unit[0] = '\0';
 
-        LOG_DEBUG("Param[%d]: obis=%s hex=%s code=%s name=%s unit=%s val=%s",
-                  param_idx, p->obis_code, p->obis_hex,
-                  p->param_code, p->param_name, p->unit, p->value);
+        LOG_DEBUG("Param[%d]: obis=%s hex=%s val=%s",
+                  param_idx, p->obis_code, p->obis_hex, p->value);
 
         param_idx++;
     }
 
     snapshot->param_count = param_idx;
-    free_obis_maps(code_root, name_root, unit_root);
     cJSON_Delete(root);
 
     LOG_INFO("Meter %s: parsed %d parameters (timestamp: %s)",
@@ -973,9 +973,11 @@ void cdf_write_footer(FILE *fp)
 
 void json_write_header(FILE *fp, char *data_Type)
 {
+    printf("111111111111\n");
+    printf("cpy cmd transc = %s", cpy_cmd.transaction);
     fprintf(fp, "{\n");
 
-    if (event_cmd_redis_resp == 1 || ls_cmd_redis_resp == 1 || billing_cmd_redis_resp == 1 || midnight_cmd_redis_resp == 1)
+    if (event_cmd_redis_resp == 1 || ls_cmd_redis_resp == 1 || billing_cmd_redis_resp == 1 || midnight_cmd_redis_resp == 1 || get_day_cmd == 1)
     {
         fprintf(fp, "  \"TYPE\": \"OD_RESP_MESSAGE\",\n");
     }
@@ -984,7 +986,17 @@ void json_write_header(FILE *fp, char *data_Type)
         fprintf(fp, "  \"TYPE\": \"CYCLIC_MESSAGE\",\n");
     }
 
-    fprintf(fp, "  \"SEQ_NUM\": \"0002\",\n");
+    if (get_day_cmd || check_redis_resp)
+    {
+
+        fprintf(fp, "  \"SEQ_NUM\": \"%s\",\n", cpy_cmd.transaction);
+    }
+    else
+    {
+
+        fprintf(fp, "  \"SEQ_NUM\": \"%d\",\n", seq_num++);
+    }
+
     fprintf(fp, "  \"DATATYPE\": \"%s\",\n", data_Type);
 }
 
@@ -1121,7 +1133,7 @@ void json_write_general(redisContext *ctx, FILE *fp, const char *serial, const c
     fprintf(fp, "    },\n");
 
     fprintf(fp,
-            "    \"FIELDS\": [\"CODE\", \"OBIS_CODE\", \"NAME\", \"VALUE\", \"UNIT\"],\n");
+            "    \"FIELDS\": [\"OBIS_CODE\", \"VALUE\"],\n");
 
     cJSON_Delete(j);
 
@@ -1141,29 +1153,42 @@ void json_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
 {
     char field_key[128];
 
-    snprintf(field_key, sizeof(field_key), "meter_*_*_%s_details", meter_sn);
+    snprintf(field_key, sizeof(field_key),
+             "meter_*_*_%s_details", meter_sn);
+
     LOG_INFO("Fetching D1 from meter_status[%s]", field_key);
-    redisReply *r = redisCommand(rc, "HSCAN meter_status 0 MATCH %s", field_key);
+
+    redisReply *r = redisCommand(rc,
+                                 "HSCAN meter_status 0 MATCH %s",
+                                 field_key);
+
     if (!r || r->type != REDIS_REPLY_ARRAY || r->elements != 2)
     {
         LOG_ERROR("meter_status entry missing for %s", field_key);
+
         if (r)
             freeReplyObject(r);
 
         return;
     }
+
     redisReply *data = r->element[1];
+
     if (data->type != REDIS_REPLY_ARRAY || data->elements == 0)
     {
         LOG_ERROR("No matching meter_status entry");
+
         freeReplyObject(r);
         return;
     }
+
     char *json_str = NULL;
+
     for (size_t i = 0; i < data->elements; i += 2)
     {
         char *key = data->element[i]->str;
         char *value = data->element[i + 1]->str;
+
         if (strstr(key, meter_sn))
         {
             json_str = strdup(value);
@@ -1172,65 +1197,157 @@ void json_write_d1(FILE *out, redisContext *rc, const char *meter_sn)
     }
 
     freeReplyObject(r);
+
     if (!json_str)
     {
         LOG_ERROR("No JSON found");
         return;
     }
+
     cJSON *j = cJSON_Parse(json_str);
     free(json_str);
+
     if (!j)
     {
         LOG_ERROR("JSON Parse failed");
         return;
     }
-    const char *serial_number = cJSON_GetObjectItem(j, "serial_number")->valuestring;
-    const char *pt_ratio = cJSON_GetObjectItem(j, "PT_ratio")->valuestring;
-    const char *ct_ratio = cJSON_GetObjectItem(j, "CT_ratio")->valuestring;
-    const char *meter_type = cJSON_GetObjectItem(j, "meter_type")->valuestring;
-    const char *firmware_version = cJSON_GetObjectItem(j, "firmware_version")->valuestring;
-    const char *manufacturer = cJSON_GetObjectItem(j, "manufacturer")->valuestring;
-    const char *meter_category = cJSON_GetObjectItem(j, "meter_category")->valuestring;
-    const char *curr_rating = cJSON_GetObjectItem(j, "current_rating")->valuestring;
-    const char *year_of_manuf = cJSON_GetObjectItem(j, "year_of_manufacture")->valuestring;
-    const char *ipv4_address = cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
-    const char *hdlc_device_address = cJSON_GetObjectItem(j, "hdlc_device_address")->valuestring;
-    const char *tranfmr_volt = cJSON_GetObjectItem(j, "transfrmr_volt")->valuestring;
-    const char *extra_obis_1 = cJSON_GetObjectItem(j, "extra_obis_1")->valuestring;
-    const char *extra_obis_2 = cJSON_GetObjectItem(j, "extra_obis_2")->valuestring;
-    const char *extra_obis_3 = cJSON_GetObjectItem(j, "extra_obis_3")->valuestring;
+
+    const char *serial_number =
+        cJSON_GetObjectItem(j, "serial_number")->valuestring;
+
+    const char *pt_ratio =
+        cJSON_GetObjectItem(j, "PT_ratio")->valuestring;
+
+    const char *ct_ratio =
+        cJSON_GetObjectItem(j, "CT_ratio")->valuestring;
+
+    const char *meter_type =
+        cJSON_GetObjectItem(j, "meter_type")->valuestring;
+
+    const char *firmware_version =
+        cJSON_GetObjectItem(j, "firmware_version")->valuestring;
+
+    const char *manufacturer =
+        cJSON_GetObjectItem(j, "manufacturer")->valuestring;
+
+    const char *meter_category =
+        cJSON_GetObjectItem(j, "meter_category")->valuestring;
+
+    const char *curr_rating =
+        cJSON_GetObjectItem(j, "current_rating")->valuestring;
+
+    const char *year_of_manuf =
+        cJSON_GetObjectItem(j, "year_of_manufacture")->valuestring;
+
+    const char *ipv4_address =
+        cJSON_GetObjectItem(j, "ipv4_address")->valuestring;
+
+    const char *hdlc_device_address =
+        cJSON_GetObjectItem(j, "hdlc_device_address")->valuestring;
+
+    const char *tranfmr_volt =
+        cJSON_GetObjectItem(j, "transfrmr_volt")->valuestring;
+
+    const char *extra_obis_1 =
+        cJSON_GetObjectItem(j, "extra_obis_1")->valuestring;
+
+    const char *extra_obis_2 =
+        cJSON_GetObjectItem(j, "extra_obis_2")->valuestring;
+
+    const char *extra_obis_3 =
+        cJSON_GetObjectItem(j, "extra_obis_3")->valuestring;
+
+
+    /*
+     * NAMEPLATE_PROFILE contains only:
+     *
+     * [OBIS_CODE, VALUE]
+     *
+     * No CODE, NAME or UNIT.
+     */
 
     fprintf(out, "    \"NAMEPLATE_PROFILE\": [\n");
 
-    fprintf(out, "      [\"G1\",\"%s\",\"Meter_Serial_Number\",\"%s\",\"\"],\n", OBIS_METER_SERIAL, serial_number);
-    fprintf(out, "      [\"G22\",\"%s\",\"Manufacturer_Name\",\"%s\",\"\"],\n", OBIS_MANUFACTURER, manufacturer);
-    fprintf(out, "      [\"G17\",\"%s\",\"Firmware_Version\",\"%s\",\"\"],\n", OBIS_FW_VERSION, firmware_version);
-    fprintf(out, "      [\"G15\",\"%s\",\"Meter_Type\",\"%s\",\"\"],\n",
-            OBIS_METER_TYPE, meter_type);
-    fprintf(out, "      [\"G8\",\"%s\",\"Internal_CT_Ratio\",\"%s\",\"\"],\n",
-            OBIS_CT_RATIO, pt_ratio);
-    fprintf(out, "      [\"G7\",\"%s\",\"Internal_VT_Ratio\",\"%s\",\"\"],\n",
-            OBIS_VT_RATIO, ct_ratio);
-    fprintf(out, "      [\"\",\"%s\",\"Meter_Category\",\"%s\",\"\"],\n",
-            OBIS_METER_CATEGORY, meter_category);
-    fprintf(out, "      [\"\",\"%s\",\"Current_Rating\",\"%s\",\"\"],\n",
-            OBIS_CURR_RATING, curr_rating);
-    fprintf(out, "      [\"\",\"%s\",\"Year_Of_Manufacture\",\"%s\",\"\"],\n",
-            OBIS_YR_OF_MANUF, year_of_manuf);
-    fprintf(out, "      [\"\",\"%s\",\"IPv4_Address\",\"%s\",\"\"],\n",
-            IPV4_ADDRESS, ipv4_address);
-    fprintf(out, "      [\"\",\"%s\",\"HDLC_Device_Address\",\"%s\",\"\"],\n",
-            HDLC_SETUP, hdlc_device_address);
-    fprintf(out, "      [\"\",\"%s\",\"Transformer_Voltage\",\"%s\",\"\"],\n",
-            TRANSFRMR_RATIO_VOLTAGE, tranfmr_volt);
-    fprintf(out, "      [\"\",\"%s\",\"Extra_OBIS_1\",\"%s\",\"\"],\n",
-            EXTRA_OBIS_1, extra_obis_1);
-    fprintf(out, "      [\"\",\"%s\",\"Extra_OBIS_2\",\"%s\",\"\"],\n",
-            EXTRA_OBIS_2, extra_obis_2);
-    fprintf(out, "      [\"\",\"%s\",\"Extra_OBIS_3\",\"%s\",\"\"]\n",
-            EXTRA_OBIS_3, extra_obis_3);
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_METER_SERIAL,
+            serial_number);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_MANUFACTURER,
+            manufacturer);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_FW_VERSION,
+            firmware_version);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_METER_TYPE,
+            meter_type);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_CT_RATIO,
+            pt_ratio);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_VT_RATIO,
+            ct_ratio);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_METER_CATEGORY,
+            meter_category);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_CURR_RATING,
+            curr_rating);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            OBIS_YR_OF_MANUF,
+            year_of_manuf);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            IPV4_ADDRESS,
+            ipv4_address);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            HDLC_SETUP,
+            hdlc_device_address);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            TRANSFRMR_RATIO_VOLTAGE,
+            tranfmr_volt);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            EXTRA_OBIS_1,
+            extra_obis_1);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"],\n",
+            EXTRA_OBIS_2,
+            extra_obis_2);
+
+    fprintf(out,
+            "      [\"%s\",\"%s\"]\n",
+            EXTRA_OBIS_3,
+            extra_obis_3);
+
     fprintf(out, "    ],\n");
+
     cJSON_Delete(j);
+
     LOG_INFO("JSON D1 written");
 }
 
@@ -1248,19 +1365,15 @@ void json_write_d2(FILE *fp, redisContext *ctx, const InstSnapshot *snapshot)
     {
         const InstParam *p = &snapshot->params[i];
 
-        if (p->param_name[0] == '\0')
-            continue;
-
+        /* No mapping is used for instantaneous data.
+         * Therefore do not filter on param_name. Write every OBIS/value pair. */
         if (!first)
             fprintf(fp, ",\n");
 
         fprintf(fp,
-                "        [\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]",
-                p->param_code,
+                "        [\"%s\",\"%s\"]",
                 p->obis_hex,
-                p->param_name,
-                p->value,
-                p->unit);
+                p->value);
 
         first = 0;
     }
@@ -2118,7 +2231,7 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
     char billing_file_name[128];
     char event_file_name[128];
 
-    struct timespec start,bill_start,bill_end,min_start,min_end,event_start,event_end,end, zip_strt, zip_end;
+    struct timespec start, bill_start, bill_end, min_start, min_end, event_start, event_end, end, zip_strt, zip_end;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     int rc1 = generate_load_profile_json(ctx, serial, date, ls_file_name);
@@ -2140,14 +2253,12 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
 
     sscanf(date, "%d-%d-%d", &y, &m, &d);
 
-    const char *months[] = {
-        "", "Jan", "Feb", "Mar", "Apr", "May", "June",
-        "July", "Aug", "Sep", "Oct", "Nov", "Dec"};
+   
 
-    sprintf(bill_date, "%s %d", months[m], y);
-    
+    sprintf(bill_date, "%d_%d", m, y);
+
     clock_gettime(CLOCK_MONOTONIC, &bill_start);
-    int rc2 = generate_billing_json(ctx, serial, bill_date, billing_file_name);
+    int rc2 = generate_billing_json(ctx, serial, bill_date, bill_date, billing_file_name);
     clock_gettime(CLOCK_MONOTONIC, &bill_end);
 
     long elapsed_ms_bill =
@@ -2162,7 +2273,7 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
     }
 
     clock_gettime(CLOCK_MONOTONIC, &min_start);
-    int rc3 = generate_midnight_json(ctx, serial, date, mn_file_name);
+    int rc3 = generate_midnight_json(ctx, serial, date, 1, mn_file_name);
 
     clock_gettime(CLOCK_MONOTONIC, &min_end);
 
@@ -2178,15 +2289,14 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
     }
 
     clock_gettime(CLOCK_MONOTONIC, &event_start);
-    int rc4 = generate_event_log_json(ctx, serial, date, event_type, event_file_name);
+    int rc4 = generate_event_log_json(ctx, serial, date, date, event_type, event_file_name);
     clock_gettime(CLOCK_MONOTONIC, &event_end);
 
     long elapsed_ms_event =
         (event_end.tv_sec - event_start.tv_sec) * 1000L +
         (event_end.tv_nsec - event_start.tv_nsec) / 1000000L;
- LOG_INFO("Meter %s - Time taken for event data: %ld ms (%.3f seconds)", serial, elapsed_ms_event, elapsed_ms_event / 1000.0);
+    LOG_INFO("Meter %s - Time taken for event data: %ld ms (%.3f seconds)", serial, elapsed_ms_event, elapsed_ms_event / 1000.0);
 
-    
     if (rc4 != 0)
     {
         // return result; //rithika commented 28/04/2026
@@ -2209,7 +2319,6 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
 
     // rithika 18Apr2026
 
-    
     char file_rem_cmd[128];
     sprintf(file_rem_cmd, "rm %s", ls_file_name);
     system(file_rem_cmd);
@@ -2229,7 +2338,6 @@ cdf_result_t generate_profile_json(redisContext *ctx, const char *serial, const 
     sprintf(file_rem_cmd, "rm %s", event_file_name);
     system(file_rem_cmd);
     LOG_INFO("%s is deleted successfully", event_file_name);
-
 
     /* Zip */
     // long zip_size = 0;
@@ -2311,7 +2419,11 @@ cdf_result_t generate_mqtt_ls_json(redisContext *ctx, const char *serial, const 
     return result;
 }
 
-cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial, const char *date)
+#if 1
+cdf_result_t generate_mqtt_billing_json(redisContext *ctx,
+                                        const char *serial,
+                                        const char *start_date,
+                                        const char *end_date)
 {
 
     cdf_result_t result;
@@ -2321,30 +2433,9 @@ cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial, c
 
     char billing_file_name[128];
 
-    int y, m, d;
-    char bill_date[64];
 
-    // sscanf(date, "%d-%d-%d", &y, &m, &d);
 
-    if (sscanf(date, "%d_%d", &m, &y) != 2)
-    {
-        LOG_ERROR("Invalid billing date format: %s", date);
-        return result;
-    }
-
-    if (m < 1 || m > 12)
-    {
-        LOG_ERROR("Invalid month: %d", m);
-        return result;
-    }
-
-    const char *months[] = {
-        "", "Jan", "Feb", "Mar", "Apr", "May", "June",
-        "July", "Aug", "Sep", "Oct", "Nov", "Dec"};
-
-    sprintf(bill_date, "%s %d", months[m], y);
-
-    int rc2 = generate_billing_json(ctx, serial, bill_date, billing_file_name);
+    int rc2 = generate_billing_json(ctx, serial, start_date,end_date, billing_file_name);
     if (rc2 != 0)
     {
         // return result; //rithika commented 28/04/2026
@@ -2368,8 +2459,9 @@ cdf_result_t generate_mqtt_billing_json(redisContext *ctx, const char *serial, c
 
     return result;
 }
+#endif
 
-cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *date)
+cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, const char *strt_date, int num_days)
 {
     cdf_result_t result;
     result.status = -1;
@@ -2378,7 +2470,7 @@ cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, 
 
     char mn_file_name[128];
 
-    int rc3 = generate_midnight_json(ctx, serial, date, mn_file_name);
+    int rc3 = generate_midnight_json(ctx, serial, strt_date, num_days, mn_file_name);
     if (rc3 != 0)
     {
         // return result; //rithika commented 28/04/2026
@@ -2403,7 +2495,7 @@ cdf_result_t generate_mqtt_midnight_json(redisContext *ctx, const char *serial, 
     return result;
 }
 
-cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, const char *date)
+cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, const char *strt_date, char *end_date, char *event_catgy)
 {
     cdf_result_t result;
     result.status = -1;
@@ -2412,7 +2504,7 @@ cdf_result_t generate_mqtt_event_json(redisContext *ctx, const char *serial, con
 
     char event_file_name[128];
 
-    int rc4 = generate_event_log_json(ctx, serial, date, "all", event_file_name);
+    int rc4 = generate_event_log_json(ctx, serial, strt_date, end_date, event_catgy, event_file_name);
     if (rc4 != 0)
     {
         // return result; //rithika commented 28/04/2026

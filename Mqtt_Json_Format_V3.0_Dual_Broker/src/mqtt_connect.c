@@ -80,11 +80,10 @@ pthread_cond_t mqtt_publish_cond = PTHREAD_COND_INITIALIZER;
 volatile int mqtt_publish_done = 0;
 volatile int mqtt_publish_failed = 0;
 
-
 char mqtt_cmd_buffer[4096];
 volatile int mqtt_cmd_recv = 0;
 
-volatile int mqtt_cmd_broker = -1;   /* 0=mqtt1, 1=mqtt2 */
+volatile int mqtt_cmd_broker = -1; /* 0=mqtt1, 1=mqtt2 */
 
 // rithika 25Sept2026
 int Fetchday_cmd_broker = -1;
@@ -193,8 +192,7 @@ extern volatile int mqtt_led_connected; /*Gokul added this for cloud status show
 //     LOG_INFO("[STATE] Active broker is now %s", current_active ? current_active->cfg.broker_ip : "NONE");
 // }
 
-
-static void on_connect_success(void *mqtt_ctx,MQTTAsync_successData *resp)
+static void on_connect_success(void *mqtt_ctx, MQTTAsync_successData *resp)
 {
     mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
 
@@ -207,7 +205,7 @@ static void on_connect_success(void *mqtt_ctx,MQTTAsync_successData *resp)
     conn->connected = true;
     mqtt_led_connected = 1;
 
-    LOG_INFO("[MQTT] Connected to %s, Port = %d",conn->cfg.broker_ip,conn->cfg.broker_port);
+    LOG_INFO("[MQTT] Connected to %s, Port = %d", conn->cfg.broker_ip, conn->cfg.broker_port);
 
     /* =========================================================
      * mqtt1 CONNECTED
@@ -317,26 +315,24 @@ static void on_connect_success(void *mqtt_ctx,MQTTAsync_successData *resp)
              mqtt2_connecting);
 }
 
-
-
 static const char *mqtt_connack_reason_string(int reason)
 {
     switch (reason)
     {
-        case 0:
-            return "Connection accepted";
-        case 1:
-            return "Unacceptable MQTT protocol version";
-        case 2:
-            return "Client identifier rejected";
-        case 3:
-            return "MQTT broker/service unavailable";
-        case 4:
-            return "Bad username or password";
-        case 5:
-            return "Client not authorized";
-        default:
-            return "Unknown MQTT broker connection refusal";
+    case 0:
+        return "Connection accepted";
+    case 1:
+        return "Unacceptable MQTT protocol version";
+    case 2:
+        return "Client identifier rejected";
+    case 3:
+        return "MQTT broker/service unavailable";
+    case 4:
+        return "Bad username or password";
+    case 5:
+        return "Client not authorized";
+    default:
+        return "Unknown MQTT broker connection refusal";
     }
 }
 
@@ -344,45 +340,44 @@ static const char *mqtt_client_error_string(int rc)
 {
     switch (rc)
     {
-        case MQTTASYNC_SUCCESS:
-            return "Success";
-        case MQTTASYNC_FAILURE:
-            return "General MQTT client failure";
-        case MQTTASYNC_PERSISTENCE_ERROR:
-            return "MQTT persistence error";
-        case MQTTASYNC_DISCONNECTED:
-            return "MQTT client is disconnected";
-        case MQTTASYNC_MAX_MESSAGES_INFLIGHT:
-            return "Maximum number of in-flight messages reached";
-        case MQTTASYNC_BAD_UTF8_STRING:
-            return "Invalid UTF-8 string";
-        case MQTTASYNC_NULL_PARAMETER:
-            return "NULL parameter";
-        case MQTTASYNC_TOPICNAME_TRUNCATED:
-            return "MQTT topic name was truncated";
-        case MQTTASYNC_BAD_STRUCTURE:
-            return "Invalid MQTT structure or structure version";
-        case MQTTASYNC_BAD_QOS:
-            return "Invalid MQTT QoS value";
-        case MQTTASYNC_NO_MORE_MSGIDS:
-            return "No more MQTT message IDs available";
-        case MQTTASYNC_OPERATION_INCOMPLETE:
-            return "MQTT operation is incomplete";
-        case MQTTASYNC_MAX_BUFFERED_MESSAGES:
-            return "Maximum buffered message limit reached";
-        case MQTTASYNC_SSL_NOT_SUPPORTED:
-            return "SSL/TLS is not supported by this Paho library";
-        case MQTTASYNC_BAD_PROTOCOL:
-            return "Invalid MQTT protocol or broker URL";
-        case MQTTASYNC_BAD_MQTT_OPTION:
-            return "Invalid MQTT option";
-        case MQTTASYNC_WRONG_MQTT_VERSION:
-            return "Wrong MQTT protocol version";
-        default:
-            return "Unknown Paho MQTT client error";
+    case MQTTASYNC_SUCCESS:
+        return "Success";
+    case MQTTASYNC_FAILURE:
+        return "General MQTT client failure";
+    case MQTTASYNC_PERSISTENCE_ERROR:
+        return "MQTT persistence error";
+    case MQTTASYNC_DISCONNECTED:
+        return "MQTT client is disconnected";
+    case MQTTASYNC_MAX_MESSAGES_INFLIGHT:
+        return "Maximum number of in-flight messages reached";
+    case MQTTASYNC_BAD_UTF8_STRING:
+        return "Invalid UTF-8 string";
+    case MQTTASYNC_NULL_PARAMETER:
+        return "NULL parameter";
+    case MQTTASYNC_TOPICNAME_TRUNCATED:
+        return "MQTT topic name was truncated";
+    case MQTTASYNC_BAD_STRUCTURE:
+        return "Invalid MQTT structure or structure version";
+    case MQTTASYNC_BAD_QOS:
+        return "Invalid MQTT QoS value";
+    case MQTTASYNC_NO_MORE_MSGIDS:
+        return "No more MQTT message IDs available";
+    case MQTTASYNC_OPERATION_INCOMPLETE:
+        return "MQTT operation is incomplete";
+    case MQTTASYNC_MAX_BUFFERED_MESSAGES:
+        return "Maximum buffered message limit reached";
+    case MQTTASYNC_SSL_NOT_SUPPORTED:
+        return "SSL/TLS is not supported by this Paho library";
+    case MQTTASYNC_BAD_PROTOCOL:
+        return "Invalid MQTT protocol or broker URL";
+    case MQTTASYNC_BAD_MQTT_OPTION:
+        return "Invalid MQTT option";
+    case MQTTASYNC_WRONG_MQTT_VERSION:
+        return "Wrong MQTT protocol version";
+    default:
+        return "Unknown Paho MQTT client error";
     }
 }
-
 
 static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 {
@@ -498,9 +493,6 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
     update_mqtt_time(0);
 }
 
-
-
-
 // static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 // {
 //     mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
@@ -562,16 +554,11 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 //     update_mqtt_time(0);
 // }
 
-
-
-
 // void on_send_success(void *context, MQTTAsync_successData *response)
 // {
 //     unsigned char *payload = (unsigned char *)context;
 //     free(payload);
 // }
-
-
 
 void on_send_success(void *context, MQTTAsync_successData *response)
 {
@@ -594,12 +581,6 @@ void on_send_failure(void *context, MQTTAsync_failureData *response)
     pthread_cond_signal(&mqtt_publish_cond);
     pthread_mutex_unlock(&mqtt_publish_mutex);
 }
-
-
-
-
-
-
 
 // void connectionLost(void *context, char *cause)
 // {
@@ -642,7 +623,6 @@ void on_send_failure(void *context, MQTTAsync_failureData *response)
 //     //     }
 //     // }
 // }
-
 
 /* Gokul commenting this for adding detailed logs in connection lost section --> 04/09/2026 */
 // void connectionLost(void *context, char *cause)
@@ -713,7 +693,6 @@ void on_send_failure(void *context, MQTTAsync_failureData *response)
 //         mqtt2_lost_time = monotonic_sec();
 //     }
 // }
-
 
 void connectionLost(void *context, char *cause)
 {
@@ -801,7 +780,6 @@ void connectionLost(void *context, char *cause)
         mqtt2_lost_time = monotonic_sec();
     }
 }
-
 
 /**
  * configure_tls()
@@ -1145,7 +1123,6 @@ int mqtt_connect(mqtt_conn_t *conn)
 //     LOG_INFO("[FILE] Transfer complete");
 // }
 
-
 void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 {
     int rc;
@@ -1233,7 +1210,6 @@ void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
         LOG_INFO("[INSTANTANEOUS DATA Message] Transfer successfully completed");
 }
 
-
 // void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
 // {
 //     int rc;
@@ -1320,7 +1296,6 @@ void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 //     update_mqtt_time(1);
 // }
 
-
 void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
 {
     int rc;
@@ -1401,8 +1376,6 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
 
     update_mqtt_time(1);
 }
-
-
 
 void mqtt_subscribe_topic(mqtt_conn_t *mqtt_cfg)
 {
@@ -1918,6 +1891,40 @@ int parse_cmd_request(const char *json_str, cmd_request_t *cmd)
     return 0;
 }
 
+#include <time.h>
+
+int calculate_num_days(const char *start_date, const char *end_date)
+{
+    struct tm start_tm = {0};
+    struct tm end_tm = {0};
+
+    int day, month, year;
+
+    if (sscanf(start_date, "%d-%d-%d", &day, &month, &year) != 3)
+        return -1;
+
+    start_tm.tm_mday = day;
+    start_tm.tm_mon = month - 1;
+    start_tm.tm_year = year - 1900;
+    start_tm.tm_hour = 12;
+
+    if (sscanf(end_date, "%d-%d-%d", &day, &month, &year) != 3)
+        return -1;
+
+    end_tm.tm_mday = day;
+    end_tm.tm_mon = month - 1;
+    end_tm.tm_year = year - 1900;
+    end_tm.tm_hour = 12;
+
+    time_t start_time = mktime(&start_tm);
+    time_t end_time = mktime(&end_tm);
+
+    if (start_time == (time_t)-1 || end_time == (time_t)-1)
+        return -1;
+
+    return (int)((end_time - start_time) / (24 * 60 * 60)) + 1;
+}
+
 int generate_redis_list(cmd_request_t cmd)
 {
     cpy_cmd = cmd;
@@ -1935,34 +1942,47 @@ int generate_redis_list(cmd_request_t cmd)
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "seq_no", cmd.transaction);
 
-    if (!strcmp(cmd.data_type_req, "BLOCK"))
+    if (!strcmp(cmd.data_type_req, "LS") || !strcmp(cmd.data_type_req, "MIDNIGHT"))
     {
-        cJSON_AddStringToObject(root, "msgType", "OD_LS_DATA");
-        cJSON_AddStringToObject(data, "startdate", cmd.args[2]); // 30-03-2026 format
-    }
-    else if (!strcmp(cmd.data_type_req, "DAILY"))
-    {
+        int num_days;
+        char num_days_str[16];
 
-        int day, month, year;
-        char mn_date[32] = {0};
-
-        if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+        if (!strcmp(cmd.data_type_req, "LS"))
         {
-            snprintf(mn_date, sizeof(mn_date), "%d_%d", month, year);
+            cJSON_AddStringToObject(root, "msgType", "OD_LS_DATA");
+        }
+        else if (!strcmp(cmd.data_type_req, "MIDNIGHT"))
+        {
+            cJSON_AddStringToObject(root, "msgType", "OD_MN_DATA");
         }
 
-        cJSON_AddStringToObject(root, "msgType", "OD_MN_DATA");
-        cJSON_AddStringToObject(data, "startdate", mn_date);
+        cJSON_AddStringToObject(data, "startdate", cmd.args[2]); // 30-03-2026 format
+        cJSON_AddStringToObject(data, "end_date", cmd.args[3]);
+
+        num_days = calculate_num_days(cmd.args[2], cmd.args[3]);
+
+        if (num_days < 0)
+        {
+            LOG_ERROR("Invalid date format. Start: %s, End: %s",
+                      cmd.args[2], cmd.args[3]);
+            cJSON_Delete(root);
+            return -1;
+        }
+
+        snprintf(num_days_str, sizeof(num_days_str), "%d", num_days);
+
+        cJSON_AddStringToObject(data, "num_days", num_days_str);
     }
+
     else if (!strcmp(cmd.data_type_req, "EVENT"))
     {
         cJSON_AddStringToObject(root, "msgType", "OD_EVENT_DATA");
 
-        if (!strcmp(cmd.args[3], "1") || !strcmp(cmd.args[3], "2") || !strcmp(cmd.args[3], "3") || !strcmp(cmd.args[3], "4") || !strcmp(cmd.args[3], "5") || !strcmp(cmd.args[3], "6"))
+        if (!strcmp(cmd.args[4], "1") || !strcmp(cmd.args[4], "2") || !strcmp(cmd.args[4], "3") || !strcmp(cmd.args[4], "4") || !strcmp(cmd.args[4], "5") || !strcmp(cmd.args[4], "6"))
         {
             // rithika 14Aug2026 read all events of specific category
             char event_cat[32];
-            sprintf(event_cat, "event_data_cat%s", cmd.args[3]);
+            sprintf(event_cat, "event_data_cat%s", cmd.args[4]);
             LOG_INFO("event_catagory : %s, startdate : all", event_cat);
 
             cJSON_AddStringToObject(data, "startdate", "all");
@@ -1970,29 +1990,37 @@ int generate_redis_list(cmd_request_t cmd)
         }
         else
         {
-            LOG_INFO("event_catagory : all, startdate : 10"); // read last 10 events of all the categories
-            cJSON_AddStringToObject(data, "startdate", "10");
+            LOG_INFO("event_catagory : all, startdate : all"); // read last 10 events of all the categories
+            cJSON_AddStringToObject(data, "startdate", "all");
             cJSON_AddStringToObject(data, "event_type", "all");
         }
+        cJSON_AddStringToObject(data, "num_days", "1");
     }
     else if (!strcmp(cmd.data_type_req, "BILLING"))
     {
         int day, month, year;
         char bill_date[32] = {0};
+        char end_bill_date[32] = {0};
 
         if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
         {
             snprintf(bill_date, sizeof(bill_date), "%d_%d", month, year);
         }
+        if (sscanf(cmd.args[3], "%d-%d-%d", &day, &month, &year) == 3)
+        {
+            snprintf(end_bill_date, sizeof(end_bill_date), "%d_%d", month, year);
+        }
 
         cJSON_AddStringToObject(root, "msgType", "OD_BILL_DATA");
-        cJSON_AddStringToObject(data, "startdate", bill_date); // 30-03-2026 format
+        cJSON_AddStringToObject(data, "startdate", bill_date);    // 30-03-2026 format
+        cJSON_AddStringToObject(data, "end_date", end_bill_date); // 30-03-2026 format
+        cJSON_AddStringToObject(data, "num_days", "1");
     }
 
     cJSON_AddStringToObject(root, "init_source", "mqtt");
 
     cJSON_AddStringToObject(data, "port_id", status.port);
-    cJSON_AddStringToObject(data, "num_days", "1");
+
     cJSON_AddStringToObject(data, "meter", cmd.args[1]);
 
     cJSON_AddItemToObject(root, "data", data);
@@ -2031,6 +2059,411 @@ int is_list_empty()
     return is_empty;
 }
 
+int read_redis_resp(mqtt_conn_t *conn)
+{
+    int count = is_list_empty();
+    int is_ls_data = 0;
+    static int ls_completed_days = 0;
+    static int ls_total_days = 0;
+
+    char start_date[32] = {0};
+    char end_date[32] = {0};
+    char curr_date[32] = {0};
+    char meter_ser[64] = {0};
+    char output_msg[PAYLOAD_BUFFER_SIZE] = {0};
+    int msg_size = 0;
+
+    if (count == 0)
+    {
+        return -1;
+    }
+
+    redisReply *rly = redisCommand(ctx, "lpop mqtt_command_resp");
+
+    if (rly == NULL)
+    {
+        fprintf(stderr, "Redis command failed\n");
+        return -1;
+    }
+
+    if (rly->str == NULL)
+    {
+        freeReplyObject(rly);
+        return -1;
+    }
+
+    char *cmd_resp = rly->str;
+
+    printf("cmd_resp %s\n", cmd_resp);
+
+    cJSON *root = cJSON_Parse(cmd_resp);
+
+    freeReplyObject(rly);
+
+    if (!root)
+    {
+        LOG_ERROR("Failed to parse meter status JSON");
+        return -1;
+    }
+
+    cJSON *data =
+        cJSON_GetObjectItemCaseSensitive(root, "data");
+
+    if (!cJSON_IsObject(data))
+    {
+        cJSON_Delete(root);
+        check_redis_resp = 0;
+        return -1;
+    }
+
+    cJSON *meter_ser_no =
+        cJSON_GetObjectItemCaseSensitive(data, "meter");
+
+    if (cJSON_IsString(meter_ser_no) &&
+        meter_ser_no->valuestring != NULL)
+    {
+        snprintf(meter_ser,
+                 sizeof(meter_ser),
+                 "%s",
+                 meter_ser_no->valuestring);
+    }
+
+    cJSON *data_type =
+        cJSON_GetObjectItemCaseSensitive(root, "msg_type");
+
+    cJSON *startdate =
+        cJSON_GetObjectItemCaseSensitive(data, "start_date");
+
+    cJSON *enddate =
+        cJSON_GetObjectItemCaseSensitive(data, "end_date");
+
+    cJSON *num_days_json =
+        cJSON_GetObjectItemCaseSensitive(data, "num_days");
+
+    cJSON *event_cat =
+        cJSON_GetObjectItemCaseSensitive(data, "event_type");
+
+    int num_days = 0;
+
+    if (cJSON_IsString(num_days_json) &&
+        num_days_json->valuestring != NULL)
+    {
+        num_days = atoi(num_days_json->valuestring);
+    }
+    else if (cJSON_IsNumber(num_days_json))
+    {
+        num_days = num_days_json->valueint;
+    }
+
+    if (cJSON_IsString(data_type) &&
+        data_type->valuestring != NULL)
+    {
+
+        if (strcmp(data_type->valuestring, "OD_LS_DATA") == 0)
+        {
+            is_ls_data = 1;
+            if (num_days <= 0)
+            {
+                LOG_ERROR("Invalid num_days: %d", num_days);
+
+                cJSON_Delete(root);
+                check_redis_resp = 0;
+                return -1;
+            }
+
+            cJSON *currdate =
+                cJSON_GetObjectItemCaseSensitive(data, "curr_date");
+
+            if (ls_total_days == 0)
+            {
+                ls_total_days = num_days;
+                ls_completed_days = 0;
+
+                LOG_INFO("New Load Survey request received");
+                LOG_INFO("Total LS days: %d",
+                         ls_total_days);
+            }
+
+            if (!cJSON_IsString(currdate) ||
+                currdate->valuestring == NULL)
+            {
+                LOG_ERROR("Invalid curr_date in LS response");
+
+                cJSON_Delete(root);
+                return -1;
+            }
+
+            int day;
+            int month;
+            int year;
+
+            if (sscanf(currdate->valuestring,
+                       "%d-%d-%d",
+                       &day,
+                       &month,
+                       &year) != 3)
+            {
+                LOG_ERROR("Invalid curr_date format: %s",
+                          currdate->valuestring);
+
+                cJSON_Delete(root);
+                return -1;
+            }
+
+            snprintf(curr_date,
+                     sizeof(curr_date),
+                     "%04d-%02d-%02d",
+                     year,
+                     month,
+                     day);
+
+            if (cJSON_IsString(startdate) &&
+                startdate->valuestring != NULL)
+            {
+                snprintf(start_date,
+                         sizeof(start_date),
+                         "%s",
+                         startdate->valuestring);
+            }
+
+            LOG_INFO("LS Response received");
+            LOG_INFO("Meter          : %s", meter_ser);
+            LOG_INFO("Start date     : %s", start_date);
+            LOG_INFO("Current date   : %s", curr_date);
+            LOG_INFO("Total days     : %d", ls_total_days);
+            LOG_INFO("Completed days : %d", ls_completed_days);
+
+            ls_cmd_redis_resp = 1;
+
+            cdf_result_t res =
+                generate_mqtt_ls_json(ctx,
+                                      meter_ser,
+                                      curr_date);
+
+            if (res.status == 0)
+            {
+                LOG_INFO("Load Survey Profile Generated Successfully: %s",
+                         res.filename);
+
+                mqtt_send_file(conn,
+                               res.filename,
+                               CMD_RESP_TOPIC);
+
+                remove(res.filename);
+
+                LOG_INFO("%s is deleted successfully",
+                         res.filename);
+            }
+            else
+            {
+                LOG_ERROR("Failed to generate Load Survey JSON for %s",
+                          curr_date);
+
+                ls_cmd_redis_resp = 0;
+
+                cJSON_Delete(root);
+
+                return -1;
+            }
+
+            ls_completed_days++;
+
+            LOG_INFO("LS date processed successfully");
+            LOG_INFO("Completed days: %d / %d",
+                     ls_completed_days,
+                     ls_total_days);
+
+            if (ls_completed_days >= ls_total_days)
+            {
+
+                check_redis_resp = 0;
+
+                ls_cmd_redis_resp = 0;
+
+                LOG_INFO("All Load Survey dates completed");
+                LOG_INFO("Total dates processed: %d",
+                         ls_completed_days);
+
+                ls_completed_days = 0;
+                ls_total_days = 0;
+            }
+            else
+            {
+
+                check_redis_resp = 1;
+
+                LOG_INFO("Waiting for next LS response");
+                LOG_INFO("Remaining dates: %d",
+                         ls_total_days - ls_completed_days);
+            }
+        }
+
+        else if (strcmp(data_type->valuestring, "OD_MN_DATA") == 0)
+        {
+            // if (cJSON_IsString(startdate) && startdate->valuestring != NULL)
+
+            if (cJSON_IsString(startdate) && startdate->valuestring != NULL && cJSON_IsString(enddate) && enddate->valuestring != NULL)
+            {
+                int day;
+                int month;
+                int year;
+
+                int end_day;
+                int end_month;
+                int end_year;
+
+                if (sscanf(startdate->valuestring, "%d-%d-%d", &day, &month, &year) == 3)
+                {
+                    snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+                }
+
+                if (sscanf(enddate->valuestring, "%d-%d-%d", &end_day, &end_month, &end_year) == 3)
+                {
+                    snprintf(end_date, sizeof(end_date), "%04d-%02d-%02d", end_year, end_month, end_day);
+                }
+
+                midnight_cmd_redis_resp = 1;
+
+                cdf_result_t res = generate_mqtt_midnight_json(ctx, meter_ser, start_date, num_days);
+
+                if (res.status == 0)
+                {
+                    LOG_INFO("Midnight Profile Generated Successfully: %s", res.filename);
+
+                    mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
+
+                    remove(res.filename);
+
+                    LOG_INFO("%s is deleted successfully", res.filename);
+
+                    midnight_cmd_redis_resp = 0;
+                }
+            }
+            else
+            {
+                LOG_INFO("Invalid start_date %s", start_date);
+            }
+        }
+
+        else if (strcmp(data_type->valuestring, "OD_EVENT_DATA") == 0)
+        {
+
+            int day;
+            int month;
+            int year;
+            char event_type[32];
+            char event_category[32];
+
+            if (sscanf(cpy_cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+            {
+                snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+            }
+            if (sscanf(cpy_cmd.args[3], "%d-%d-%d", &day, &month, &year) == 3)
+            {
+                snprintf(end_date, sizeof(end_date), "%04d-%02d-%02d", year, month, day);
+            }
+
+            if (cJSON_IsString(event_cat) &&
+                event_cat->valuestring != NULL)
+            {
+                snprintf(event_type,
+                         sizeof(event_type),
+                         "%s",
+                         event_cat->valuestring);
+                if (strcmp(event_type, "event_data_cat1") == 0)
+                {
+                    snprintf(event_category, sizeof(event_category), "1");
+                }
+                else if (strcmp(event_type, "event_data_cat2") == 0)
+                {
+                    snprintf(event_category, sizeof(event_category), "2");
+                }
+                else if (strcmp(event_type, "event_data_cat3") == 0)
+                {
+                    snprintf(event_category, sizeof(event_category), "3");
+                }
+                else if (strcmp(event_type, "event_data_cat4") == 0)
+                {
+                    snprintf(event_category, sizeof(event_category), "4");
+                }
+                else if (strcmp(event_type, "event_data_cat5") == 0)
+                {
+                    snprintf(event_category, sizeof(event_category), "5");
+                }
+                else
+                {
+                    snprintf(event_category, sizeof(event_category), "all");
+                }
+            }
+
+            event_cmd_redis_resp = 1;
+            LOG_INFO("read redis resp start_date %s", start_date);
+            cdf_result_t res =
+                generate_mqtt_event_json(ctx,
+                                         meter_ser,
+                                         start_date, end_date, event_category);
+
+            if (res.status == 0)
+            {
+                LOG_INFO("Event Profile Generated Successfully: %s",
+                         res.filename);
+
+                mqtt_send_file(conn,
+                               res.filename,
+                               CMD_RESP_TOPIC);
+
+                remove(res.filename);
+
+                LOG_INFO("%s is deleted successfully",
+                         res.filename);
+
+                event_cmd_redis_resp = 0;
+            }
+        }
+
+        else if (strcmp(data_type->valuestring, "OD_BILL_DATA") == 0)
+        {
+            if (cJSON_IsString(startdate) && startdate->valuestring != NULL && cJSON_IsString(enddate) && enddate->valuestring != NULL)
+            {
+                billing_cmd_redis_resp = 1;
+
+                cdf_result_t res = generate_mqtt_billing_json(ctx, meter_ser, startdate->valuestring, enddate->valuestring);
+
+                if (res.status == 0)
+                {
+
+                    LOG_INFO("Billing Profile Generated Successfully: %s", res.filename);
+
+                    mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
+
+                    remove(res.filename);
+
+                    LOG_INFO("%s is deleted successfully", res.filename);
+
+                    billing_cmd_redis_resp = 0;
+                }
+            }
+            else
+            {
+                LOG_INFO("Invalid start_date %s", start_date);
+            }
+        }
+    }
+
+    cJSON_Delete(root);
+
+    LOG_INFO("read_redis_resp meter_ser %s start_date %s ", meter_ser, start_date);
+
+    if (!is_ls_data)
+    {
+        check_redis_resp = 0;
+    }
+
+    return 0;
+}
+
+// rithika 28Sept2026
+#if 0
 int read_redis_resp(mqtt_conn_t *conn)
 {
     int count = is_list_empty();
@@ -2214,7 +2647,7 @@ int read_redis_resp(mqtt_conn_t *conn)
     check_redis_resp = 0;
     return 0;
 }
-
+#endif
 // rithika 01Aug2026
 // int read_redis_resp(mqtt_conn_t *conn)
 // {
@@ -2426,6 +2859,313 @@ int read_redis_resp(mqtt_conn_t *conn)
 //     }
 // }
 
+int parse_getday_cmd(cmd_request_t cmd, mqtt_conn_t *conn)
+{
+
+    char start_date[32] = {0};
+    char end_date[32] = {0};
+    char curr_date[32] = {0};
+    int ls_completed_days = 0;
+    int ls_total_days = 0;
+
+    int num_days = calculate_num_days(cmd.args[2], cmd.args[3]);
+
+    if (strcmp(cmd.data_type_req, "LS") == 0)
+    {
+        if (num_days <= 0)
+        {
+            LOG_ERROR("Invalid num_days: %d", num_days);
+
+            return -1;
+        }
+
+        snprintf(start_date,
+                 sizeof(start_date),
+                 "%s",
+                 cmd.args[2]);
+
+        printf("cpy cmd transc = %s", cpy_cmd.transaction);
+        LOG_INFO("New Load Survey request received");
+        LOG_INFO("Meter          : %s", cmd.args[1]);
+        LOG_INFO("Start date     : %s", start_date);
+        LOG_INFO("End date       : %s", cmd.args[3]);
+        LOG_INFO("Total LS days  : %d", num_days);
+
+        ls_total_days = num_days;
+        ls_completed_days = 0;
+
+        /*
+         * Parse START_DATE
+         * Format: DD-MM-YYYY
+         */
+        int start_day;
+        int start_month;
+        int start_year;
+
+        if (sscanf(cmd.args[2],
+                   "%d-%d-%d",
+                   &start_day,
+                   &start_month,
+                   &start_year) != 3)
+        {
+            LOG_ERROR("Invalid START_DATE format: %s",
+                      cmd.args[2]);
+
+            return -1;
+        }
+
+        /*
+         * Use struct tm so month/year changes
+         * are handled correctly.
+         */
+        struct tm date_tm;
+
+        memset(&date_tm, 0, sizeof(date_tm));
+
+        date_tm.tm_mday = start_day;
+        date_tm.tm_mon = start_month - 1;
+        date_tm.tm_year = start_year - 1900;
+        date_tm.tm_hour = 0;
+        date_tm.tm_min = 0;
+        date_tm.tm_sec = 0;
+
+        time_t current_time = mktime(&date_tm);
+
+        if (current_time == (time_t)-1)
+        {
+            LOG_ERROR("Failed to convert START_DATE: %s",
+                      cmd.args[2]);
+
+            return -1;
+        }
+
+        /*
+         * Process every date from START_DATE
+         * through END_DATE.
+         */
+        int i;
+
+        for (i = 0; i < num_days; i++)
+        {
+            struct tm *current_tm;
+
+            current_tm = localtime(&current_time);
+
+            if (current_tm == NULL)
+            {
+                LOG_ERROR("Failed to convert current date");
+
+                return -1;
+            }
+
+            snprintf(curr_date,
+                     sizeof(curr_date),
+                     "%04d-%02d-%02d",
+                     current_tm->tm_year + 1900,
+                     current_tm->tm_mon + 1,
+                     current_tm->tm_mday);
+
+            LOG_INFO("----------------------------------------");
+            LOG_INFO("LS date processing");
+            LOG_INFO("Meter          : %s", cmd.args[1]);
+            LOG_INFO("Start date     : %s", start_date);
+            LOG_INFO("End date       : %s", cmd.args[3]);
+            LOG_INFO("Current date   : %s", curr_date);
+            LOG_INFO("Total days     : %d", num_days);
+            LOG_INFO("Completed days : %d", ls_completed_days);
+
+            /*
+             * Generate JSON for this particular date.
+             */
+            cdf_result_t res =
+                generate_mqtt_ls_json(ctx,
+                                      cmd.args[1],
+                                      curr_date);
+
+            if (res.status == 0)
+            {
+                LOG_INFO("Load Survey Profile Generated Successfully: %s",
+                         res.filename);
+
+                mqtt_send_file(conn,
+                               res.filename,
+                               CMD_RESP_TOPIC);
+
+                remove(res.filename);
+
+                LOG_INFO("%s is deleted successfully",
+                         res.filename);
+            }
+            else
+            {
+                LOG_ERROR("Failed to generate Load Survey JSON for %s",
+                          curr_date);
+
+                return -1;
+            }
+
+            ls_completed_days++;
+
+            LOG_INFO("LS date processed successfully");
+            LOG_INFO("Completed days: %d / %d",
+                     ls_completed_days,
+                     ls_total_days);
+
+            /*
+             * Move to next date.
+             */
+            current_time += 24 * 60 * 60;
+        }
+
+        /*
+         * All dates processed.
+         */
+
+        LOG_INFO("----------------------------------------");
+        LOG_INFO("All Load Survey dates completed");
+        LOG_INFO("Total dates processed: %d",
+                 ls_completed_days);
+
+        ls_completed_days = 0;
+        ls_total_days = 0;
+    }
+
+    else if (strcmp(cmd.data_type_req, "MIDNIGHT") == 0)
+    {
+        int day;
+        int month;
+        int year;
+
+        int end_day;
+        int end_month;
+        int end_year;
+
+        if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+        {
+            snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+        }
+
+        if (sscanf(cmd.args[3], "%d-%d-%d", &end_day, &end_month, &end_year) == 3)
+        {
+            snprintf(end_date, sizeof(end_date), "%04d-%02d-%02d", end_year, end_month, end_day);
+        }
+
+        cdf_result_t res = generate_mqtt_midnight_json(ctx, cmd.args[1], start_date, num_days);
+
+        if (res.status == 0)
+        {
+            LOG_INFO("Midnight Profile Generated Successfully: %s", res.filename);
+
+            mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
+
+            remove(res.filename);
+
+            LOG_INFO("%s is deleted successfully", res.filename);
+        }
+    }
+
+    else if (strcmp(cmd.data_type_req, "EVENT") == 0)
+    {
+
+        int day;
+        int month;
+        int year;
+        char event_type[32];
+        
+
+        if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+        {
+            snprintf(start_date, sizeof(start_date), "%04d-%02d-%02d", year, month, day);
+        }
+        if (sscanf(cmd.args[3], "%d-%d-%d", &day, &month, &year) == 3)
+        {
+            snprintf(end_date, sizeof(end_date), "%04d-%02d-%02d", year, month, day);
+        }
+
+        snprintf(event_type,
+                 sizeof(event_type),
+                 "%s",
+                 cmd.args[4]);
+        // if (strcmp(event_type, "event_data_cat1") == 0)
+        // {
+        //     snprintf(event_category, sizeof(event_category), "1");
+        // }
+        // else if (strcmp(event_type, "event_data_cat2") == 0)
+        // {
+        //     snprintf(event_category, sizeof(event_category), "2");
+        // }
+        // else if (strcmp(event_type, "event_data_cat3") == 0)
+        // {
+        //     snprintf(event_category, sizeof(event_category), "3");
+        // }
+        // else if (strcmp(event_type, "event_data_cat4") == 0)
+        // {
+        //     snprintf(event_category, sizeof(event_category), "4");
+        // }
+        // else if (strcmp(event_type, "event_data_cat5") == 0)
+        // {
+        //     snprintf(event_category, sizeof(event_category), "5");
+        // }
+        // else
+        // {
+        //     snprintf(event_category, sizeof(event_category), "all");
+        // }
+
+        LOG_INFO(" start_date %s", start_date);
+        cdf_result_t res =
+            generate_mqtt_event_json(ctx,
+                                     cmd.args[1],
+                                     start_date, end_date, event_type);
+
+        if (res.status == 0)
+        {
+            LOG_INFO("Event Profile Generated Successfully: %s",
+                     res.filename);
+
+            mqtt_send_file(conn,
+                           res.filename,
+                           CMD_RESP_TOPIC);
+
+            remove(res.filename);
+
+            LOG_INFO("%s is deleted successfully",
+                     res.filename);
+        }
+    }
+
+    else if (strcmp(cmd.data_type_req, "BILLING") == 0)
+    {
+        int day;
+        int month;
+        int year;
+
+        if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
+        {
+            snprintf(start_date, sizeof(start_date), "%d_%d", month, year);
+        }
+        if (sscanf(cmd.args[3], "%d-%d-%d", &day, &month, &year) == 3)
+        {
+            snprintf(end_date, sizeof(end_date), "%d_%d", month, year);
+        }
+
+        cdf_result_t res = generate_mqtt_billing_json(ctx, cmd.args[1], start_date, end_date);
+
+        if (res.status == 0)
+        {
+
+            LOG_INFO("Billing Profile Generated Successfully: %s", res.filename);
+
+            mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
+
+            remove(res.filename);
+
+            LOG_INFO("%s is deleted successfully", res.filename);
+        }
+    }
+
+    return 0;
+}
+
 int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 {
     int i;
@@ -2442,6 +3182,9 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         fprintf(stderr, "Failed to parse command request\n");
         return 1;
     }
+
+    // rithika 29Sept2026
+    cpy_cmd = cmd;
 
     LOG_INFO("TYPE        : %s", cmd.type);
     LOG_INFO("TRANSACTION : %s", cmd.transaction);
@@ -2545,34 +3288,34 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         // rithika 12Aug2026
         get_day_cmd = 1;
 
-        // cdf_result_t res = generate_profile_cdf(ctx, cmd.args[0], today_date, "all");
-        cdf_result_t res = generate_profile_json(ctx, cmd.args[1], today_date, "all");
-        if (res.status == 0)
-        {
-            LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
-            mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
+        parse_getday_cmd(cmd, conn);
+        // cdf_result_t res = generate_profile_json(ctx, cmd.args[1], today_date, "all");
+        // if (res.status == 0)
+        // {
+        //     LOG_INFO("Meter Profile Generated Successfully: %s", res.filename);
+        //     mqtt_send_file(conn, res.filename, CMD_RESP_TOPIC);
 
-            // rithika 18Apr2026
-            char file_rem_cmd[128];
-            sprintf(file_rem_cmd, "rm %s", res.filename);
-            system(file_rem_cmd);
+        //     // rithika 18Apr2026
+        //     char file_rem_cmd[128];
+        //     sprintf(file_rem_cmd, "rm %s", res.filename);
+        //     system(file_rem_cmd);
 
-            LOG_INFO("%s is deleted successfully", res.filename);
+        //     LOG_INFO("%s is deleted successfully", res.filename);
 
-            msg_size = success_resp_msg(cmd, output_msg);
-            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
-        }
-        else
-        {
-            msg_size = failure_resp_msg(cmd, output_msg);
-            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
-        }
+        //     msg_size = success_resp_msg(cmd, output_msg);
+        //     mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        // }
+        // else
+        // {
+        //     msg_size = failure_resp_msg(cmd, output_msg);
+        //     mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        // }
         get_day_cmd = 0;
     }
 
     else if (!strcmp(cmd.type, "FetchDay") && cmd.args[0][0] != '\0')
     {
-         Fetchday_cmd_broker  = broker;
+        Fetchday_cmd_broker = broker;
         /*Serial Number check for the incoming messages*/
         char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
         if (strcmp(cmd.args[0], dcu_sn) != 0)
@@ -2778,8 +3521,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 //     return 1;
 // }
 
-
-int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_message *message)
+int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
 {
     mqtt_conn_t *conn = (mqtt_conn_t *)context;
     pthread_mutex_lock(&cmd_mutex);
@@ -2814,8 +3556,6 @@ int on_message_arrived(void *context,char *topicName,int topicLen,MQTTAsync_mess
 
     return 1;
 }
-
-
 
 // int update_mqtt_status(char *status)
 // {
@@ -3368,14 +4108,16 @@ int update_mqtt_time(int update_last_msg_time)
     if (mqtt1.connected && mqtt1_mqtt_conn_time > 0)
     {
         int uptime = (int)(now - mqtt1_mqtt_conn_time);
-        if (uptime < 0) uptime = 0;
+        if (uptime < 0)
+            uptime = 0;
         format_uptime(uptime, mqtt1_uptime, sizeof(mqtt1_uptime));
     }
 
     if (mqtt2.connected && secn_mqtt_conn_time > 0)
     {
         int uptime = (int)(now - secn_mqtt_conn_time);
-        if (uptime < 0) uptime = 0;
+        if (uptime < 0)
+            uptime = 0;
         format_uptime(uptime, mqtt2_uptime, sizeof(mqtt2_uptime));
     }
 
@@ -3385,12 +4127,14 @@ int update_mqtt_time(int update_last_msg_time)
             rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", mqtt1_status_hash, mqtt1_uptime, pub_time);
         else
             rly = redisCommand(ctx, "HSET %s uptime %s", mqtt1_status_hash, mqtt1_uptime);
-        if (rly) freeReplyObject(rly);
+        if (rly)
+            freeReplyObject(rly);
     }
     else
     {
         rly = redisCommand(ctx, "HSET %s uptime 0s", mqtt1_status_hash);
-        if (rly) freeReplyObject(rly);
+        if (rly)
+            freeReplyObject(rly);
     }
 
     if (mqtt2.connected)
@@ -3399,12 +4143,14 @@ int update_mqtt_time(int update_last_msg_time)
             rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", mqtt2_status_hash, mqtt2_uptime, pub_time);
         else
             rly = redisCommand(ctx, "HSET %s uptime %s", mqtt2_status_hash, mqtt2_uptime);
-        if (rly) freeReplyObject(rly);
+        if (rly)
+            freeReplyObject(rly);
     }
     else
     {
         rly = redisCommand(ctx, "HSET %s uptime 0s", mqtt2_status_hash);
-        if (rly) freeReplyObject(rly);
+        if (rly)
+            freeReplyObject(rly);
     }
 
     return 0;

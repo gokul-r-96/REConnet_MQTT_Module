@@ -6,38 +6,6 @@ extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) - fetch/parse once per
- * file generation instead of once per row/parameter. */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key, char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
-
-/**
- * @brief Lookup MN param code, name and unit for a given OBIS from Redis.
- *
- * Reads three sub-hashes from REDIS_HASH_MN_OBIS_MAP.
- *
- * @param ctx        Redis context.
- * @param obis       OBIS decimal string.
- * @param code_buf   Output: param code.
- * @param name_buf   Output: param name.
- * @param unit_buf   Output: param unit.
- */
-static void lookup_mn_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *unit_root,
-                                   const char *obis,
-                                   char *code_buf, size_t code_len,
-                                   char *name_buf, size_t name_len,
-                                   char *unit_buf, size_t unit_len)
-{
-    /* Default to empty strings on failure */
-    code_buf[0] = name_buf[0] = unit_buf[0] = '\0';
-
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
-}
-
 /**
  * @brief Read Midnight data for a specific date from SQLite database.
  *
@@ -55,15 +23,17 @@ static void lookup_mn_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *un
  */
 static int read_mn_data(const char *db_path, const MeterStatus *status,
                         const char *serial, const char *date,
-                        redisContext *ctx, MNSnapshot *snapshot)
+                        redisContext *ctx, MNSnapshot *snapshot,
+                        int drop_od_table)
 {
+    (void)ctx;
     memset(snapshot, 0, sizeof(*snapshot));
     snprintf(snapshot->meter_serial, sizeof(snapshot->meter_serial), "%s", serial);
 
     /* Build table name */
     char table[128];
 
-    if (midnight_cmd_redis_resp == 1 )
+    if (midnight_cmd_redis_resp == 1)
     {
         snprintf(table, sizeof(table), "daily_profile_data_od_%s_%s_%s_%s",
                  status->manuf_key, status->dcu_serial, status->port, serial);
@@ -98,7 +68,23 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, query, -1, &stmt, NULL) != SQLITE_OK)
     {
-        LOG_ERROR("Failed to prepare query: %s", sqlite3_errmsg(db));
+        const char *errmsg = sqlite3_errmsg(db);
+
+        if (strstr(errmsg, "no such table") != NULL)
+        {
+            LOG_WARN("No midnight table found for meter %s date %s. "
+                     "Treating as no data.",
+                     serial, date);
+
+            snapshot->params = NULL;
+            snapshot->param_count = 0;
+
+            sqlite3_close(db);
+
+            return 0;
+        }
+
+        LOG_ERROR("Failed to prepare query: %s", errmsg);
         sqlite3_close(db);
         return -1;
     }
@@ -118,13 +104,6 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
     }
 
     int param_idx = 0;
-
-    /* Fetch+parse the Midnight OBIS maps ONCE for this file, not once per column */
-    cJSON *code_root = NULL;
-    cJSON *name_root = NULL;
-    cJSON *unit_root = NULL;
-    fetch_obis_maps(ctx, REDIS_HASH_MN_OBIS_MAP,
-                    &code_root, &name_root, &unit_root);
 
     /* Read the single row (if it exists) */
     if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -165,41 +144,32 @@ static int read_mn_data(const char *db_path, const MeterStatus *status,
             }
 
             /* Populate parameter */
-            snprintf(p->obis_code, sizeof(p->obis_code), "%s", obis);
+            snprintf(p->obis_code, sizeof(p->obis_code), "%s", obis_hex);
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from MN-specific hash */
-            lookup_mn_obis_mapping(code_root, name_root, unit_root, obis,
-                                   p->param_code, sizeof(p->param_code),
-                                   p->param_name, sizeof(p->param_name),
-                                   p->unit, sizeof(p->unit));
-
-            LOG_DEBUG("MN param[%d]: obis=%s hex=%s code=%s name=%s unit=%s val=%s",
-                      param_idx, p->obis_code, p->obis_hex, p->param_code,
-                      p->param_name, p->unit, p->value);
+            LOG_DEBUG("MN param[%d]: obis=%s value=%s",
+                      param_idx, p->obis_code, p->value);
 
             param_idx++;
         }
     }
+
     else
     {
-        LOG_WARN("No midnight data found for meter %s on date %s", serial, date);
-        free_obis_maps(code_root, name_root, unit_root);
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
-        free(snapshot->params);
-        snapshot->params = NULL;
-        return -1;
+        LOG_WARN("No midnight data found for meter %s on date %s",
+                 serial, date);
+
+        snapshot->param_count = 0;
     }
 
     snapshot->param_count = param_idx;
 
-    free_obis_maps(code_root, name_root, unit_root);
-
     sqlite3_finalize(stmt);
 
-    if (strstr(table, "od_"))
+    /* For multi-day OD_MN_DATA, keep the temporary table until the
+     * last requested date has been read. */
+    if (strstr(table, "od_") && drop_od_table)
     {
         drop_table(table, db);
     }
@@ -285,46 +255,156 @@ static void cdf_write_d6(FILE *fp, redisContext *ctx, const MNSnapshot *snapshot
     //     cJSON_Delete(root);
 }
 
-static void json_write_d6(FILE *fp, redisContext *ctx, const MNSnapshot *snapshot)
+/* Increment a date in YYYY-MM-DD format by one day. */
+static int is_leap_year(int year)
+{
+    return ((year % 4 == 0 && year % 100 != 0) ||
+            (year % 400 == 0));
+}
+
+static int days_in_month(int month, int year)
+{
+    static const int days[] =
+        {
+            31, 28, 31, 30, 31, 30,
+            31, 31, 30, 31, 30, 31};
+
+    if (month < 1 || month > 12)
+        return 0;
+
+    if (month == 2)
+        return is_leap_year(year) ? 29 : 28;
+
+    return days[month - 1];
+}
+
+static int increment_date(char *date, size_t date_len)
+{
+    int year;
+    int month;
+    int day;
+
+    if (!date)
+        return -1;
+
+    if (sscanf(date, "%d-%d-%d", &year, &month, &day) != 3)
+        return -1;
+
+    if (month < 1 || month > 12 ||
+        day < 1 || day > days_in_month(month, year))
+        return -1;
+
+    day++;
+
+    if (day > days_in_month(month, year))
+    {
+        day = 1;
+        month++;
+
+        if (month > 12)
+        {
+            month = 1;
+            year++;
+        }
+    }
+
+    snprintf(date, date_len, "%04d-%02d-%02d", year, month, day);
+    return 0;
+}
+
+/* Write all requested Midnight snapshots into one JSON DAILY_PROFILE. */
+static void json_write_d6_multi(FILE *fp,
+                                redisContext *ctx,
+                                MNSnapshot *snapshots,
+                                int snapshot_count)
 {
     (void)ctx;
-    fprintf(fp, "    \"DAILY_PROFILE\": {\n");
-    fprintf(fp, "      \"FIELDS\": [\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
-    fprintf(fp, "      \"PARAMS\": [\n");
-    int first = 1;
-    for (int i = 0; i < snapshot->param_count; i++)
-    {
-        const MNParam *p = &snapshot->params[i];
-        if (p->param_name[0] == '\0')
-            continue;
-        if (!first)
-            fprintf(fp, ",\n");
-        fprintf(fp,
-                "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
-                p->param_code,
-                p->obis_hex,
-                p->param_name,
-                p->unit);
 
-        first = 0;
+    fprintf(fp, "    \"DAILY_PROFILE\": {\n");
+
+    /* Every SQLite data column is represented by its OBIS code. */
+    fprintf(fp, "      \"FIELDS\": [\"OBIS_CODE\"],\n");
+    fprintf(fp, "      \"PARAMS\": [\n");
+
+    if (snapshot_count > 0)
+    {
+        for (int i = 0; i < snapshots[0].param_count; i++)
+        {
+            const MNParam *p = &snapshots[0].params[i];
+
+            if (i > 0)
+                fprintf(fp, ",\n");
+
+            fprintf(fp, "        [\"%s\"]", p->obis_hex);
+        }
     }
 
     fprintf(fp, "\n");
     fprintf(fp, "      ],\n");
-    fprintf(fp, "      \"VALUES\": [\n");
-    fprintf(fp, "        [\"%s\",[",
-            snapshot->snapshot_date);
-    first = 1;
+    fprintf(fp, "      \"RECORDS\": [\n");
+
+    int record_count = 0;
+
+    for (int s = 0; s < snapshot_count; s++)
+    {
+        MNSnapshot *snapshot = &snapshots[s];
+
+        /* Skip dates where no midnight data was available. */
+        if (snapshot->param_count == 0)
+            continue;
+
+        if (record_count > 0)
+            fprintf(fp, ",\n");
+
+        fprintf(fp, "        [\"%s\",[", snapshot->snapshot_date);
+
+        for (int p = 0; p < snapshot->param_count; p++)
+        {
+            if (p > 0)
+                fprintf(fp, ", ");
+
+            fprintf(fp, "\"%s\"", snapshot->params[p].value);
+        }
+
+        fprintf(fp, "]]");
+
+        record_count++;
+    }
+
+    fprintf(fp, "\n");
+    fprintf(fp, "      ]\n");
+    fprintf(fp, "    }\n");
+}
+
+static void json_write_d6(FILE *fp, redisContext *ctx, const MNSnapshot *snapshot)
+{
+    (void)ctx;
+
+    fprintf(fp, "    \"DAILY_PROFILE\": {\n");
+    fprintf(fp, "      \"FIELDS\": [\"OBIS_CODE\"],\n");
+    fprintf(fp, "      \"PARAMS\": [\n");
+
     for (int i = 0; i < snapshot->param_count; i++)
     {
         const MNParam *p = &snapshot->params[i];
-        if (p->param_name[0] == '\0')
-            continue;
-        if (!first)
-            fprintf(fp, ",");
-        fprintf(fp, "\"%s\"", p->value);
 
-        first = 0;
+        if (i > 0)
+            fprintf(fp, ",\n");
+
+        fprintf(fp, "        [\"%s\"]", p->obis_hex);
+    }
+
+    fprintf(fp, "\n");
+    fprintf(fp, "      ],\n");
+    fprintf(fp, "      \"RECORDS\": [\n");
+    fprintf(fp, "        [\"%s\",[", snapshot->snapshot_date);
+
+    for (int i = 0; i < snapshot->param_count; i++)
+    {
+        if (i > 0)
+            fprintf(fp, ", ");
+
+        fprintf(fp, "\"%s\"", snapshot->params[i].value);
     }
 
     fprintf(fp, "]]\n");
@@ -368,7 +448,7 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
 
     /* 2. Read Midnight data from SQLite */
     MNSnapshot snapshot;
-    if (read_mn_data(sqlite_db_path, &status, serial, date, ctx, &snapshot) != 0)
+    if (read_mn_data(sqlite_db_path, &status, serial, date, ctx, &snapshot, 1) != 0)
     {
         LOG_ERROR("Cannot read midnight data for meter %s date %s", serial, date);
         // return -1;
@@ -427,9 +507,21 @@ int generate_midnight_cdf(redisContext *ctx, const char *serial, const char *dat
     return 0;
 }
 
-int generate_midnight_json(redisContext *ctx, const char *serial, const char *date, char *output_file)
+int generate_midnight_json(redisContext *ctx,
+                           const char *serial,
+                           const char *start_date,
+                           int num_days,
+                           char *output_file)
 {
-    LOG_INFO("Generating Midnight JSON for meter %s date %s", serial, date);
+    LOG_INFO("Generating Midnight JSON for meter %s", serial);
+    LOG_INFO("Start date : %s", start_date);
+    LOG_INFO("Number of days : %d", num_days);
+
+    if (!ctx || !serial || !start_date || !output_file || num_days <= 0)
+    {
+        LOG_ERROR("Invalid arguments for Midnight JSON generation");
+        return -1;
+    }
 
     /* 1. Read meter status from Redis */
     MeterStatus status;
@@ -439,76 +531,158 @@ int generate_midnight_json(redisContext *ctx, const char *serial, const char *da
         return -1;
     }
 
-    /* Database path */
+    /* 2. Database path */
     char base_path_dir[256];
     char sqlite_db_path[256];
 
-    if (get_base_path(base_path_dir, sizeof(base_path_dir)) == 0)
+    if (get_base_path(base_path_dir, sizeof(base_path_dir)) != 0)
     {
-        snprintf(sqlite_db_path,
-                 sizeof(sqlite_db_path),
-                 "%s/data/dcu_dlms.db",
-                 base_path_dir);
+        LOG_ERROR("Failed to get base path");
+        return -1;
     }
 
-    /* 2. Read Midnight data */
-    MNSnapshot snapshot;
-    if (read_mn_data(sqlite_db_path, &status, serial, date, ctx, &snapshot) != 0)
+    snprintf(sqlite_db_path,
+             sizeof(sqlite_db_path),
+             "%s/data/dcu_dlms.db",
+             base_path_dir);
+
+    /* 3. Allocate one snapshot for each requested day. */
+    MNSnapshot *snapshots =
+        (MNSnapshot *)calloc(num_days, sizeof(MNSnapshot));
+
+    if (!snapshots)
     {
-        LOG_ERROR("Cannot read midnight data for meter %s date %s",
-                  serial,
-                  date);
+        LOG_ERROR("Memory allocation failed for %d snapshots", num_days);
+        return -1;
     }
 
-    if (snapshot.param_count == 0)
+    char current_date[32];
+    snprintf(current_date, sizeof(current_date), "%s", start_date);
+
+    int actual_count = 0;
+    int day_index;
+
+    /* 4. Read Midnight data for every requested date. */
+    for (day_index = 0; day_index < num_days; day_index++)
     {
-        LOG_WARN("No midnight data found for meter %s on date %s",
-                 serial,
-                 date);
+        LOG_INFO("Reading Midnight data for date %s (%d/%d)",
+                 current_date,
+                 day_index + 1,
+                 num_days);
+
+        /* Keep the OD table until the last requested date is read. */
+        int drop_od_table =
+            (day_index == num_days - 1) ? 1 : 0;
+
+        if (read_mn_data(sqlite_db_path,
+                         &status,
+                         serial,
+                         current_date,
+                         ctx,
+                         &snapshots[actual_count],
+                         drop_od_table) != 0)
+        {
+            LOG_ERROR("Cannot read midnight data for meter %s date %s",
+                      serial,
+                      current_date);
+
+            int i;
+            for (i = 0; i < actual_count; i++)
+                mn_snapshot_free(&snapshots[i]);
+
+            free(snapshots);
+            return -1;
+        }
+
+        if (snapshots[actual_count].param_count == 0)
+        {
+            LOG_WARN("No midnight data found for meter %s on date %s",
+                     serial,
+                     current_date);
+        }
+
+        actual_count++;
+
+        if (day_index < num_days - 1)
+        {
+            if (increment_date(current_date,
+                               sizeof(current_date)) != 0)
+            {
+                LOG_ERROR("Failed to increment date from %s", current_date);
+
+                int i;
+                for (i = 0; i < actual_count; i++)
+                    mn_snapshot_free(&snapshots[i]);
+
+                free(snapshots);
+                return -1;
+            }
+        }
     }
 
-    /* 3. Build output file path */
+    /* 5. Build output file path. */
     char dt_str[32];
     get_datetime_str(dt_str, sizeof(dt_str));
 
     char out_path[512];
     char base_path[256];
 
-    if (get_base_path(base_path, sizeof(base_path)) == 0)
+    if (get_base_path(base_path, sizeof(base_path)) != 0)
     {
-        snprintf(out_path,
-                 sizeof(out_path),
-                 "%s/data/MN_%s_%s.json",
-                 base_path,
-                 serial,
-                 date);
+        LOG_ERROR("Failed to get base path for output file");
+
+        int i;
+        for (i = 0; i < actual_count; i++)
+            mn_snapshot_free(&snapshots[i]);
+
+        free(snapshots);
+        return -1;
     }
 
+    snprintf(out_path,
+             sizeof(out_path),
+             "%s/data/MN_%s_%s.json",
+             base_path,
+             serial,
+             start_date);
+
+    /* 6. Open JSON file. */
     FILE *fp = fopen(out_path, "w");
+
     if (!fp)
     {
         LOG_ERROR("Cannot open output file: %s (%s)",
                   out_path,
                   strerror(errno));
 
-        mn_snapshot_free(&snapshot);
+        int i;
+        for (i = 0; i < actual_count; i++)
+            mn_snapshot_free(&snapshots[i]);
+
+        free(snapshots);
         return -1;
     }
 
-    /* 4. Write JSON */
+    /* 7. Write one JSON containing all requested dates. */
     json_write_header(fp, "MIDNIGHT_DATA_MESSAGE");
     json_write_general(ctx, fp, serial, dt_str);
     json_write_d1(fp, ctx, serial);
-    json_write_d6(fp, ctx, &snapshot);
+    json_write_d6_multi(fp, ctx, snapshots, actual_count);
     json_write_footer(fp);
 
     fclose(fp);
 
-    mn_snapshot_free(&snapshot);
+    /* 8. Free all snapshots. */
+    int i;
+    for (i = 0; i < actual_count; i++)
+        mn_snapshot_free(&snapshots[i]);
+
+    free(snapshots);
 
     strcpy(output_file, out_path);
 
     LOG_INFO("Midnight JSON written: %s", out_path);
+    LOG_INFO("Total Midnight dates generated: %d", actual_count);
     printf("JSON file generated: %s\n", out_path);
 
     return 0;

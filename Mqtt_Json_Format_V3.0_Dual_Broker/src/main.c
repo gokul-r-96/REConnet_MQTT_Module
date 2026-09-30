@@ -10,6 +10,8 @@ mqtt_conn_t mqtt2;
 mqtt_conn_t *current_active = NULL;
 redisContext *ctx;
 
+int seq_num;
+
 #define PRI_BROKER_RECONNECT_PERIOD 60
 #define NW_LOGGER_CHECK 30
 
@@ -959,9 +961,9 @@ void *mqtt_worker_thread(void *arg)
 
         /* STATE */
         LOG_INFO("[STATE] mqtt1: enabled=%d connected=%d connecting=%d | "
-                 "mqtt2: enabled=%d connected=%d connecting=%d",
+                 "mqtt2: enabled=%d connected=%d connecting=%d check_redis_resp %d",
                  mqtt1.cfg.enable_mqtt, mqtt1.connected, mqtt1_connecting,
-                 mqtt2.cfg.enable_mqtt, mqtt2.connected, mqtt2_connecting);
+                 mqtt2.cfg.enable_mqtt, mqtt2.connected, mqtt2_connecting, check_redis_resp);
 // rithika 25Sept2026
         if (check_redis_resp == 1)
         {
@@ -1749,6 +1751,7 @@ int main()
     dcu_netlog_init(redis_key);
     send_hc_msg();
 
+    seq_num = 1;
     mqtt_module_start();
 
     while (stop_flag)

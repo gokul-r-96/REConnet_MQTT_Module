@@ -24,13 +24,6 @@ extern int billing_cmd_redis_resp;
 extern int event_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-/* Shared OBIS-map cache helpers (defined in file_gen_main.c) - fetch/parse once per
- * file generation instead of once per row/parameter. */
-extern void fetch_obis_maps(redisContext *ctx, const char *hash,
-                            cJSON **code_root, cJSON **name_root, cJSON **unit_root);
-extern void lookup_obis_value(cJSON *root, const char *obis_key, char *out_buf, size_t out_len);
-extern void free_obis_maps(cJSON *code_root, cJSON *name_root, cJSON *unit_root);
-
 /* ============================================================
  *  OBIS parameter mapping
  * ============================================================ */
@@ -219,28 +212,6 @@ int read_meter_status(redisContext *ctx, const char *serial, MeterStatus *status
 }
 
 /**
- * @brief Lookup LS param code, name and unit for a given OBIS from Redis.
- *
- * Reads three sub-hashes from REDIS_HASH_LS_OBIS_MAP.
- *
- * @param ctx        Redis context.
- * @param obis       OBIS decimal string.
- * @param code_buf   Output: param code.
- * @param name_buf   Output: param name.
- * @param unit_buf   Output: param unit.
- */
-static void lookup_ls_obis_mapping(cJSON *code_root, cJSON *name_root, cJSON *unit_root,
-                                   const char *obis,
-                                   char *code_buf, size_t code_len,
-                                   char *name_buf, size_t name_len,
-                                   char *unit_buf, size_t unit_len)
-{
-    lookup_obis_value(code_root, obis, code_buf, code_len);
-    lookup_obis_value(name_root, obis, name_buf, name_len);
-    lookup_obis_value(unit_root, obis, unit_buf, unit_len);
-}
-
-/**
  * @brief Read LS data for a specific date from SQLite database.
  *
  * Opens the database, queries the table "ls_data_<manuf>_<dcu>_<port>_<serial>"
@@ -258,6 +229,7 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
                         const char *serial, const char *date,
                         redisContext *ctx, LSDayProfile *day_profile)
 {
+    (void)ctx;
     memset(day_profile, 0, sizeof(*day_profile));
     snprintf(day_profile->meter_serial, sizeof(day_profile->meter_serial), "%s", serial);
     snprintf(day_profile->date, sizeof(day_profile->date), "%s", date);
@@ -327,11 +299,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
 
     int interval_idx = 0;
 
-    /* Fetch+parse the LS OBIS maps ONCE for this file, not once per row/parameter. */
-    cJSON *code_root = NULL, *name_root = NULL, *unit_root = NULL;
-    fetch_obis_maps(ctx, REDIS_HASH_LS_OBIS_MAP,
-                    &code_root, &name_root, &unit_root);
-
     /* Iterate over result rows */
     while (sqlite3_step(stmt) == SQLITE_ROW && interval_idx < NO_OF_LS_BLOCKS)
     {
@@ -392,12 +359,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
             snprintf(p->obis_hex, sizeof(p->obis_hex), "%s", obis_hex);
             snprintf(p->value, sizeof(p->value), "%s", val_str);
 
-            /* Lookup mapping from the already-parsed LS map (no Redis call here). */
-            lookup_ls_obis_mapping(code_root, name_root, unit_root, obis,
-                                   p->param_code, sizeof(p->param_code),
-                                   p->param_name, sizeof(p->param_name),
-                                   p->unit, sizeof(p->unit));
-
             param_idx++;
         }
 
@@ -407,7 +368,6 @@ static int read_ls_data(const char *db_path, const MeterStatus *status,
 
     day_profile->interval_count = interval_idx;
 
-    free_obis_maps(code_root, name_root, unit_root);
 
     sqlite3_finalize(stmt);
 
@@ -519,66 +479,60 @@ static void cdf_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profil
 static void json_write_d4(FILE *fp, redisContext *ctx, const LSDayProfile *profile)
 {
     (void)ctx;
+
     fprintf(fp, "    \"BLOCK_PROFILE\": {\n");
-    fprintf(fp,
-            "      \"BLOCK_INTERVAL\": %d,\n",
-            profile->interval_period);
-    fprintf(fp,
-            "      \"FIELDS\": [\"CODE\",\"OBIS_CODE\",\"NAME\",\"UNIT\"],\n");
+    fprintf(fp, "      \"BLOCK_INTERVAL\": %d,\n", profile->interval_period);
+    fprintf(fp, "      \"FIELDS\": [\"OBIS_CODE\"],\n");
     fprintf(fp, "      \"PARAMS\": [\n");
-    int first = 1;
-    /* Print parameter definitions only once */
+
+    /*
+     * PARAMS contains only the OBIS codes returned by SQLite.
+     * No CODE, NAME, or UNIT mapping is used.
+     */
     if (profile->interval_count > 0)
     {
         const LSInterval *interval = &profile->intervals[0];
+
         for (int j = 0; j < interval->param_count; j++)
         {
             const LSParam *p = &interval->params[j];
-            if (p->param_name[0] == '\0')
-                continue;
-            if (!first)
-                fprintf(fp, ",\n");
-            fprintf(fp,
-                    "        [\"%s\",\"%s\",\"%s\",\"%s\"]",
-                    p->param_code,
-                    p->obis_hex,
-                    p->param_name,
-                    p->unit);
 
-            first = 0;
+            fprintf(fp, "        [\"%s\"]", p->obis_hex);
+
+            if (j < interval->param_count - 1)
+                fprintf(fp, ",");
+
+            fprintf(fp, "\n");
         }
     }
 
-    fprintf(fp, "\n");
     fprintf(fp, "      ],\n");
     fprintf(fp, "      \"VALUES\": [\n");
 
-    first = 1;
     for (int i = 0; i < profile->interval_count; i++)
     {
         const LSInterval *interval = &profile->intervals[i];
-        if (!first)
-            fprintf(fp, ",\n");
-        fprintf(fp,
-                "        [%d,[",
-                interval->interval_num);
 
-        int first_value = 1;
+        fprintf(fp, "        [%d,[", interval->interval_num);
+
         for (int j = 0; j < interval->param_count; j++)
         {
             const LSParam *p = &interval->params[j];
-            if (p->param_name[0] == '\0')
-                continue;
-            if (!first_value)
+
+            if (j > 0)
                 fprintf(fp, ",");
+
             fprintf(fp, "\"%s\"", p->value);
-            first_value = 0;
         }
+
         fprintf(fp, "]]");
-        first = 0;
+
+        if (i < profile->interval_count - 1)
+            fprintf(fp, ",");
+
+        fprintf(fp, "\n");
     }
 
-    fprintf(fp, "\n");
     fprintf(fp, "      ]\n");
     fprintf(fp, "    }\n");
 }
@@ -694,17 +648,22 @@ int generate_load_profile_json(redisContext *ctx, const char *serial, const char
         snprintf(sqlite_db_path, sizeof(sqlite_db_path), "%s/data/dcu_dlms.db", base_path_dir);
     }
     /* 2. Read Load Survey data */
-    LSDayProfile day_profile;
-    if (read_ls_data(sqlite_db_path, &status, serial, date, ctx, &day_profile) != 0)
-    {
-        LOG_ERROR("Cannot read LS data for meter %s date %s", serial, date);
-    }
+  LSDayProfile day_profile;
+memset(&day_profile, 0, sizeof(day_profile));
 
-    if (day_profile.interval_count == 0)
-    {
-        LOG_WARN("No LS data found for meter %s on date %s", serial, date);
-    }
+if (read_ls_data(sqlite_db_path, &status, serial, date, ctx, &day_profile) != 0)
+{
+    LOG_ERROR("Cannot read LS data for meter %s date %s",
+              serial, date);
 
+    /* Keep generating JSON with empty BLOCK_PROFILE */
+}
+
+if (day_profile.interval_count == 0)
+{
+    LOG_WARN("No LS data found for meter %s on date %s",
+             serial, date);
+}
     /* 3. Build output file path */
     char dt_str[32];
     get_datetime_str(dt_str, sizeof(dt_str));
