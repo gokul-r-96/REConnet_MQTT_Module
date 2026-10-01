@@ -371,11 +371,13 @@ static int export_one_ipsec_cfg(jbuf_t *jb, redisContext *ctx, int instance, int
     ADD_STR("left_id", "LEFT_ID");
     ADD_STR("left_src_ip", "LEFT_SRC_IP");
     ADD_STR("left_subnet", "LEFT_SUBNET");
+    ADD_STR("left_subnet_mask", "LEFT_SUBNET_MASK");
 
     /* Remote */
     ADD_STR("right_ip", "RIGHT_IP");
     ADD_STR("right_id", "RIGHT_ID");
     ADD_STR("right_subnet", "RIGHT_SUBNET");
+    ADD_STR("right_subnet_mask", "RIGHT_SUBNET_MASK");
 
     /* Connection */
     ADD_STR("conn_type", "CONN_TYPE");

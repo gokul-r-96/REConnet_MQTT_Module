@@ -270,8 +270,10 @@ int set_ipsec_cfg(redisContext *ctx, cJSON *data)
     UPDATE_STR("RIGHT_IP", "right_ip");
     UPDATE_STR("LEFT_ID", "left_id");
     UPDATE_STR("LEFT_SUBNET", "left_subnet");
+    UPDATE_STR("LEFT_SUBNET_MASK", "left_subnet_mask");
     UPDATE_STR("RIGHT_ID", "right_id");
     UPDATE_STR("RIGHT_SUBNET", "right_subnet");
+    UPDATE_STR("RIGHT_SUBNET_MASK", "right_subnet_mask");
     UPDATE_STR("TUNNEL_NAME", "tunnel_name");
 
     /* Optional future parameters */

@@ -11,8 +11,8 @@ extern int certificate_path_check_mqtt2;
 extern char meter_serials[MAX_METERS][32];
 extern int meter_count;
 extern char dcu_ser_num[SIZE_32];
-extern mqtt2_connecting;
-extern mqtt1_connecting;
+extern int mqtt2_connecting;
+extern int mqtt1_connecting;
 // rithika 02april2026
 extern redisContext *ctx;
 extern int cur_active_mqtt;
@@ -90,6 +90,721 @@ int Fetchday_cmd_broker = -1;
 pthread_mutex_t cmd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 extern volatile int mqtt_led_connected; /*Gokul added this for cloud status showing the broker is connected --> 04/09/2026*/
+
+/* =========================================================================
+ * ROBUST DUAL-BROKER CONNECTION MANAGER
+ * -------------------------------------------------------------------------
+ * Every broker (mqtt1 / mqtt2) runs through a small state machine:
+ *
+ *      IDLE ──(worker starts attempt)──> CONNECTING
+ *      CONNECTING ──(on_connect_success)──> CONNECTED
+ *      CONNECTING ──(on_connect_failure / watchdog timeout)──> CLOSING
+ *      CONNECTED  ──(connectionLost / repeated publish timeouts)──> CLOSING
+ *      CLOSING    ──(worker destroys client after a short delay)──> IDLE
+ *
+ * Rules that make it robust:
+ *   0. A broker that fails or drops is retried every 60 s (MQTT_RETRY_SEC).
+ *   1. Connections are SEQUENTIAL: at most one broker is CONNECTING at any
+ *      time. mqtt1 is tried first, mqtt2 is tried as soon as mqtt1's attempt
+ *      has finished (success, failure or watchdog timeout). The Paho API is
+ *      still fully asynchronous, so the worker thread never blocks on it.
+ *   2. Only the worker thread creates/destroys Paho clients, never a Paho
+ *      callback (MQTTAsync_destroy inside a callback is forbidden by Paho).
+ *   3. A client is always destroyed before a new one is created, so late
+ *      ("stale") callbacks from an old attempt are recognised by the state
+ *      check and ignored.
+ *   4. Publishing waits for completion with a timeout (monotonic clock), so a
+ *      dead link can never hang the worker.
+ *   5. No Redis calls are made from Paho callbacks (hiredis contexts are not
+ *      thread safe); callbacks only set flags that the worker acts on.
+ *   6. Lock order is always: g_pub_serial -> mqtt_api_mutex / g_pub_mutex,
+ *      and g_brk_mutex is never held while calling into Paho.
+ * ========================================================================= */
+
+#include <errno.h>
+#include <stdint.h>
+
+#define MQTT_CONNECT_OPT_TIMEOUT_SEC 5   /* Paho connectTimeout per attempt      */
+#define MQTT_CONNECT_WATCHDOG_SEC 20     /* hard upper bound for one attempt     */
+#define MQTT_RETRY_SEC 60                /* fixed wait between attempts          */
+#define MQTT_RETRY_MIN_SEC MQTT_RETRY_SEC /* kept for the state table init        */
+#define MQTT_RETRY_MAX_SEC MQTT_RETRY_SEC
+#define MQTT_RETRY_AFTER_LOST_SEC MQTT_RETRY_SEC /* lost link: same 60 s wait     */
+#define MQTT_DESTROY_DELAY_SEC 2         /* let Paho threads settle before free  */
+#define MQTT_PUBLISH_TIMEOUT_MS 10000    /* max wait for one publish completion  */
+#define MQTT_PUBLISH_POLL_MS 500         /* re-check link state while waiting    */
+#define MQTT_MAX_PUB_TIMEOUTS 3          /* consecutive timeouts -> reconnect    */
+#define MQTT_DEFAULT_KEEPALIVE_SEC 60    /* used when Redis gives 0 / garbage    */
+#define MQTT_CMD_QUEUE_LEN 8             /* buffered incoming commands           */
+#define MQTT_CMD_MAX_LEN 4096
+
+typedef enum
+{
+    BRK_IDLE = 0,
+    BRK_CONNECTING,
+    BRK_CONNECTED,
+    BRK_CLOSING
+} brk_state_t;
+
+typedef struct
+{
+    brk_state_t state;
+    time_t connect_start; /* when the current attempt started          */
+    time_t next_try;      /* earliest time for the next attempt        */
+    time_t destroy_at;    /* when a CLOSING client may be destroyed    */
+    int retry_delay;      /* current back-off delay (seconds)          */
+    int in_callback;      /* Paho callbacks currently running for it   */
+    int pub_timeouts;     /* consecutive publish timeouts              */
+    unsigned long attempts;
+} brk_ctl_t;
+
+static brk_ctl_t g_brk[2] = {
+    {BRK_IDLE, 0, 0, 0, MQTT_RETRY_MIN_SEC, 0, 0, 0},
+    {BRK_IDLE, 0, 0, 0, MQTT_RETRY_MIN_SEC, 0, 0, 0},
+};
+static pthread_mutex_t g_brk_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Publish completion tracking (one publish in flight at a time). */
+static pthread_mutex_t g_pub_serial = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_pub_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_pub_cond;
+static pthread_once_t g_pub_once = PTHREAD_ONCE_INIT;
+static unsigned long g_pub_seq = 0;      /* last issued request id          */
+static unsigned long g_pub_wait_seq = 0; /* id currently waited for (0=none) */
+static int g_pub_done = 0;
+static int g_pub_failed = 0;
+
+/* Incoming command queue (filled by Paho thread, drained by worker). */
+typedef struct
+{
+    int broker;
+    char data[MQTT_CMD_MAX_LEN];
+} mqtt_cmd_slot_t;
+
+static mqtt_cmd_slot_t g_cmdq[MQTT_CMD_QUEUE_LEN];
+static int g_cmdq_head = 0;
+static int g_cmdq_count = 0;
+
+/* Forward declarations (defined further down in this file / in general.h) */
+static const char *mqtt_client_error_string(int rc);
+int mqtt_connect(mqtt_conn_t *conn);
+int update_mqtt_status(char *status);
+
+/* Public API (add these prototypes to general.h) */
+void mqtt_conn_manager_poll(void);
+void mqtt_conn_manager_shutdown(void);
+int mqtt_is_ready(mqtt_conn_t *conn);
+const char *mqtt_broker_state_str(mqtt_conn_t *conn);
+int mqtt_cmd_dequeue(char *out, size_t out_len, int *broker);
+
+static int brk_index(const mqtt_conn_t *conn)
+{
+    if (conn == &mqtt1)
+        return 0;
+    if (conn == &mqtt2)
+        return 1;
+    return -1;
+}
+
+static mqtt_conn_t *brk_conn(int idx)
+{
+    return (idx == 0) ? &mqtt1 : &mqtt2;
+}
+
+static const char *brk_name(int idx)
+{
+    return (idx == 0) ? "mqtt1" : (idx == 1) ? "mqtt2" : "UNKNOWN";
+}
+
+static const char *brk_state_name(brk_state_t s)
+{
+    switch (s)
+    {
+    case BRK_IDLE:
+        return "IDLE";
+    case BRK_CONNECTING:
+        return "CONNECTING";
+    case BRK_CONNECTED:
+        return "CONNECTED";
+    case BRK_CLOSING:
+        return "CLOSING";
+    default:
+        return "?";
+    }
+}
+
+const char *mqtt_broker_state_str(mqtt_conn_t *conn)
+{
+    int idx = brk_index(conn);
+    brk_state_t s;
+
+    if (idx < 0)
+        return "UNKNOWN";
+
+    pthread_mutex_lock(&g_brk_mutex);
+    s = g_brk[idx].state;
+    pthread_mutex_unlock(&g_brk_mutex);
+
+    return brk_state_name(s);
+}
+
+/* Keep the legacy globals in sync for any code that still reads them. */
+static void brk_sync_legacy_locked(int idx)
+{
+    const brk_ctl_t *b = &g_brk[idx];
+    int connecting = (b->state == BRK_CONNECTING);
+    int closing = (b->state == BRK_CLOSING);
+
+    if (idx == 0)
+    {
+        mqtt1_connecting = connecting;
+        mqtt1_connect_start = connecting ? b->connect_start : 0;
+        mqtt1_need_destroy = closing;
+        mqtt1_destroy_time = closing ? b->destroy_at : 0;
+        last_mqtt1_try = b->connect_start;
+    }
+    else
+    {
+        mqtt2_connecting = connecting;
+        mqtt2_connect_start = connecting ? b->connect_start : 0;
+        mqtt2_need_destroy = closing;
+        mqtt2_destroy_time = closing ? b->destroy_at : 0;
+        last_mqtt2_try = b->connect_start;
+    }
+}
+
+/* Must be called with g_brk_mutex held. Never calls into Paho. */
+static void brk_begin_close_locked(int idx, time_t now, int retry_delay, const char *why)
+{
+    brk_ctl_t *b = &g_brk[idx];
+    mqtt_conn_t *conn = brk_conn(idx);
+
+    conn->connected = false;
+    b->state = BRK_CLOSING;
+    b->destroy_at = now + MQTT_DESTROY_DELAY_SEC;
+    b->next_try = now + retry_delay;
+    b->pub_timeouts = 0;
+
+    if (idx == 0)
+    {
+        mqtt1_mqtt_conn_time = 0;
+        current_active_mqtt1 = -1;
+        mqtt1_lost_time = now;
+    }
+    else
+    {
+        secn_mqtt_conn_time = 0;
+        current_active_mqtt2 = -1;
+        mqtt2_lost_time = now;
+    }
+
+    if (current_active == conn)
+    {
+        current_active = NULL;
+        cur_active_mqtt = -1;
+    }
+
+    brk_sync_legacy_locked(idx);
+
+    LOG_INFO("[CONN] %s -> CLOSING (%s), next attempt in %d s", brk_name(idx), why, retry_delay);
+}
+
+/* Fixed retry interval: every failed/lost broker waits MQTT_RETRY_SEC (60 s). */
+static int brk_next_backoff_locked(int idx)
+{
+    (void)idx;
+    return MQTT_RETRY_SEC;
+}
+
+static void brk_refresh_global_status(void)
+{
+    int any_up = (mqtt1.connected || mqtt2.connected) ? 1 : 0;
+
+    mqtt_led_connected = any_up;
+    update_mqtt_status(any_up ? "connected" : "disconnected"); /* flag only, no Redis */
+}
+
+static void brk_cb_enter(int idx)
+{
+    pthread_mutex_lock(&g_brk_mutex);
+    g_brk[idx].in_callback++;
+    pthread_mutex_unlock(&g_brk_mutex);
+}
+
+static void brk_cb_exit(int idx)
+{
+    pthread_mutex_lock(&g_brk_mutex);
+    if (g_brk[idx].in_callback > 0)
+        g_brk[idx].in_callback--;
+    pthread_mutex_unlock(&g_brk_mutex);
+}
+
+int mqtt_is_ready(mqtt_conn_t *conn)
+{
+    int idx = brk_index(conn);
+    int ready;
+
+    if (idx < 0)
+        return 0;
+
+    pthread_mutex_lock(&g_brk_mutex);
+    ready = (g_brk[idx].state == BRK_CONNECTED) && (conn->client != NULL);
+    pthread_mutex_unlock(&g_brk_mutex);
+
+    return ready;
+}
+
+/* Destroy a client. Worker thread only; never from a Paho callback. */
+static void brk_destroy_client(int idx)
+{
+    mqtt_conn_t *conn = brk_conn(idx);
+
+    /* g_pub_serial guarantees no publish is using the handle right now. */
+    pthread_mutex_lock(&g_pub_serial);
+    pthread_mutex_lock(&mqtt_api_mutex);
+
+    if (conn->client)
+    {
+        LOG_INFO("[CONN] %s: destroying old client", brk_name(idx));
+        MQTTAsync_destroy(&conn->client);
+        conn->client = NULL;
+    }
+
+    pthread_mutex_unlock(&mqtt_api_mutex);
+    pthread_mutex_unlock(&g_pub_serial);
+}
+
+static void brk_start_connect(int idx, time_t now)
+{
+    mqtt_conn_t *conn = brk_conn(idx);
+    unsigned long attempt;
+    int rc;
+
+    pthread_mutex_lock(&g_brk_mutex);
+    g_brk[idx].state = BRK_CONNECTING;
+    g_brk[idx].connect_start = now;
+    g_brk[idx].attempts++;
+    attempt = g_brk[idx].attempts;
+    brk_sync_legacy_locked(idx);
+    pthread_mutex_unlock(&g_brk_mutex);
+
+    LOG_INFO("[CONN] %s: attempt #%lu -> %s:%d", brk_name(idx), attempt,
+             conn->cfg.broker_ip, conn->cfg.broker_port);
+
+    rc = mqtt_connect(conn); /* non-blocking, result arrives via callback */
+
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        LOG_ERROR("[CONN] %s: connect could not be started, rc=%d (%s)",
+                  brk_name(idx), rc, mqtt_client_error_string(rc));
+
+        pthread_mutex_lock(&g_brk_mutex);
+        if (g_brk[idx].state == BRK_CONNECTING)
+            brk_begin_close_locked(idx, now, brk_next_backoff_locked(idx), "connect start failed");
+        pthread_mutex_unlock(&g_brk_mutex);
+    }
+}
+
+/*
+ * mqtt_conn_manager_poll()
+ * ------------------------
+ * Non-blocking. Call it often from the worker thread (every loop and between
+ * long publish batches). It runs the watchdog, destroys dead clients and starts
+ * the next connection attempt (one broker at a time).
+ */
+void mqtt_conn_manager_poll(void)
+{
+    time_t now = monotonic_sec();
+    int destroy_now[2] = {0, 0};
+    int any_connecting = 0;
+    int candidate = -1;
+    int status_changed = 0;
+    int i;
+
+    /* ---- 1. Watchdog + runtime disable ---------------------------------- */
+    pthread_mutex_lock(&g_brk_mutex);
+    for (i = 0; i < 2; i++)
+    {
+        brk_ctl_t *b = &g_brk[i];
+        mqtt_conn_t *conn = brk_conn(i);
+
+        if (b->state == BRK_CONNECTING &&
+            (now - b->connect_start) >= MQTT_CONNECT_WATCHDOG_SEC)
+        {
+            LOG_ERROR("[WATCHDOG] %s: no connect result after %d s", brk_name(i), MQTT_CONNECT_WATCHDOG_SEC);
+            brk_begin_close_locked(i, now, brk_next_backoff_locked(i), "connect watchdog timeout");
+            status_changed = 1;
+        }
+
+        if (!conn->cfg.enable_mqtt &&
+            (b->state == BRK_CONNECTING || b->state == BRK_CONNECTED))
+        {
+            brk_begin_close_locked(i, now, MQTT_RETRY_MAX_SEC, "broker disabled");
+            status_changed = 1;
+        }
+
+        if (b->state == BRK_CLOSING && now >= b->destroy_at && b->in_callback == 0)
+            destroy_now[i] = 1;
+    }
+    pthread_mutex_unlock(&g_brk_mutex);
+
+    if (status_changed)
+        brk_refresh_global_status();
+
+    /* ---- 2. Deferred destroy (outside g_brk_mutex) ----------------------- */
+    for (i = 0; i < 2; i++)
+    {
+        if (!destroy_now[i])
+            continue;
+
+        brk_destroy_client(i);
+
+        pthread_mutex_lock(&g_brk_mutex);
+        if (g_brk[i].state == BRK_CLOSING)
+        {
+            g_brk[i].state = BRK_IDLE;
+            brk_sync_legacy_locked(i);
+        }
+        pthread_mutex_unlock(&g_brk_mutex);
+    }
+
+    /* ---- 3. Sequential connect: at most one attempt in flight ----------- */
+    pthread_mutex_lock(&g_brk_mutex);
+    for (i = 0; i < 2; i++)
+    {
+        if (g_brk[i].state == BRK_CONNECTING)
+            any_connecting = 1;
+    }
+
+    if (!any_connecting)
+    {
+        for (i = 0; i < 2; i++) /* order = priority: mqtt1 first */
+        {
+            mqtt_conn_t *conn = brk_conn(i);
+
+            if (conn->cfg.enable_mqtt &&
+                g_brk[i].state == BRK_IDLE &&
+                now >= g_brk[i].next_try)
+            {
+                candidate = i;
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_brk_mutex);
+
+    if (candidate >= 0)
+        brk_start_connect(candidate, now);
+}
+
+/* Graceful shutdown: call only after the worker thread has been joined. */
+void mqtt_conn_manager_shutdown(void)
+{
+    int i;
+    time_t now = monotonic_sec();
+
+    for (i = 0; i < 2; i++)
+    {
+        mqtt_conn_t *conn = brk_conn(i);
+
+        pthread_mutex_lock(&g_brk_mutex);
+        if (g_brk[i].state != BRK_IDLE)
+            brk_begin_close_locked(i, now, MQTT_RETRY_MAX_SEC, "shutdown");
+        conn->connected = false;
+        pthread_mutex_unlock(&g_brk_mutex);
+
+        pthread_mutex_lock(&g_pub_serial);
+        pthread_mutex_lock(&mqtt_api_mutex);
+        if (conn->client)
+        {
+            if (MQTTAsync_isConnected(conn->client))
+            {
+                MQTTAsync_disconnectOptions dopts = MQTTAsync_disconnectOptions_initializer;
+                int waited_ms = 0;
+
+                dopts.timeout = 1000;
+                MQTTAsync_disconnect(conn->client, &dopts);
+
+                /* bounded wait for the DISCONNECT to go out */
+                while (MQTTAsync_isConnected(conn->client) && waited_ms < 1500)
+                {
+                    usleep(100 * 1000);
+                    waited_ms += 100;
+                }
+            }
+            MQTTAsync_destroy(&conn->client);
+            conn->client = NULL;
+        }
+        pthread_mutex_unlock(&mqtt_api_mutex);
+        pthread_mutex_unlock(&g_pub_serial);
+
+        pthread_mutex_lock(&g_brk_mutex);
+        g_brk[i].state = BRK_IDLE;
+        brk_sync_legacy_locked(i);
+        pthread_mutex_unlock(&g_brk_mutex);
+    }
+
+    mqtt_led_connected = 0;
+}
+
+/* ---- Publish with bounded wait ------------------------------------------ */
+
+static void pub_init_once(void)
+{
+    pthread_condattr_t attr;
+
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC); /* immune to NTP/RTC jumps */
+    pthread_cond_init(&g_pub_cond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+static void pub_complete(void *context, int failed)
+{
+    unsigned long seq = (unsigned long)(uintptr_t)context;
+
+    pthread_mutex_lock(&g_pub_mutex);
+    if (seq != 0 && seq == g_pub_wait_seq) /* ignore late completions */
+    {
+        g_pub_done = 1;
+        g_pub_failed = failed;
+        pthread_cond_signal(&g_pub_cond);
+    }
+    pthread_mutex_unlock(&g_pub_mutex);
+}
+
+static void pub_on_success(void *context, MQTTAsync_successData *response)
+{
+    (void)response;
+    pub_complete(context, 0);
+}
+
+static void pub_on_failure(void *context, MQTTAsync_failureData *response)
+{
+    if (response)
+        LOG_ERROR("[PUB] delivery failed, code=%d msg=%s", response->code,
+                  response->message ? response->message : "<none>");
+    pub_complete(context, 1);
+}
+
+/*
+ * Publish one message and wait (bounded) until Paho reports completion.
+ * Paho copies the payload inside MQTTAsync_sendMessage, so 'data' can be a
+ * stack buffer and no malloc/free is needed.
+ * Returns MQTTASYNC_SUCCESS or an error code. Never blocks longer than
+ * MQTT_PUBLISH_TIMEOUT_MS, and returns early if the broker drops.
+ */
+static int mqtt_publish_blocking(mqtt_conn_t *conn, const char *topic, const void *data, int len)
+{
+    MQTTAsync_message msg = MQTTAsync_message_initializer;
+    MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
+    struct timespec deadline;
+    unsigned long seq;
+    int idx = brk_index(conn);
+    int rc;
+    int done;
+    int failed;
+    int qos;
+
+    if (idx < 0 || topic == NULL || topic[0] == '\0' || data == NULL || len < 0)
+        return MQTTASYNC_NULL_PARAMETER;
+
+    pthread_once(&g_pub_once, pub_init_once);
+
+    pthread_mutex_lock(&g_pub_serial);
+
+    if (!mqtt_is_ready(conn))
+    {
+        pthread_mutex_unlock(&g_pub_serial);
+        return MQTTASYNC_DISCONNECTED;
+    }
+
+    qos = conn->cfg.qos;
+    if (qos < 0 || qos > 2)
+        qos = 1;
+
+    msg.payload = (void *)data;
+    msg.payloadlen = len;
+    msg.qos = qos;
+    msg.retained = 0;
+
+    pthread_mutex_lock(&g_pub_mutex);
+    seq = ++g_pub_seq;
+    if (seq == 0)
+        seq = ++g_pub_seq;
+    g_pub_wait_seq = seq;
+    g_pub_done = 0;
+    g_pub_failed = 0;
+    pthread_mutex_unlock(&g_pub_mutex);
+
+    opts.onSuccess = pub_on_success;
+    opts.onFailure = pub_on_failure;
+    opts.context = (void *)(uintptr_t)seq;
+
+    rc = MQTTAsync_sendMessage(conn->client, topic, &msg, &opts);
+    if (rc != MQTTASYNC_SUCCESS)
+    {
+        pthread_mutex_lock(&g_pub_mutex);
+        g_pub_wait_seq = 0;
+        pthread_mutex_unlock(&g_pub_mutex);
+        pthread_mutex_unlock(&g_pub_serial);
+
+        LOG_ERROR("[PUB] %s: sendMessage rc=%d (%s) topic=%s", brk_name(idx), rc,
+                  mqtt_client_error_string(rc), topic);
+        return rc;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += MQTT_PUBLISH_TIMEOUT_MS / 1000;
+    deadline.tv_nsec += (long)(MQTT_PUBLISH_TIMEOUT_MS % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L)
+    {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    pthread_mutex_lock(&g_pub_mutex);
+    while (!g_pub_done)
+    {
+        struct timespec slice;
+        int wrc;
+
+        /* wake up regularly to notice a lost connection early */
+        clock_gettime(CLOCK_MONOTONIC, &slice);
+        slice.tv_nsec += (long)MQTT_PUBLISH_POLL_MS * 1000000L;
+        while (slice.tv_nsec >= 1000000000L)
+        {
+            slice.tv_sec++;
+            slice.tv_nsec -= 1000000000L;
+        }
+        if (slice.tv_sec > deadline.tv_sec ||
+            (slice.tv_sec == deadline.tv_sec && slice.tv_nsec > deadline.tv_nsec))
+            slice = deadline;
+
+        wrc = pthread_cond_timedwait(&g_pub_cond, &g_pub_mutex, &slice);
+        if (g_pub_done)
+            break;
+
+        if (wrc == ETIMEDOUT)
+        {
+            struct timespec t;
+            clock_gettime(CLOCK_MONOTONIC, &t);
+            if (t.tv_sec > deadline.tv_sec ||
+                (t.tv_sec == deadline.tv_sec && t.tv_nsec >= deadline.tv_nsec))
+                break; /* overall timeout */
+
+            /* g_brk_mutex is never held while taking g_pub_mutex: safe */
+            if (!mqtt_is_ready(conn))
+                break; /* broker dropped while waiting */
+        }
+    }
+    done = g_pub_done;
+    failed = g_pub_failed;
+    g_pub_wait_seq = 0; /* any later callback for this seq is ignored */
+    pthread_mutex_unlock(&g_pub_mutex);
+
+    pthread_mutex_unlock(&g_pub_serial);
+
+    if (!done)
+    {
+        int force_reconnect = 0;
+
+        LOG_ERROR("[PUB] %s: no completion within %d ms (topic=%s)", brk_name(idx),
+                  MQTT_PUBLISH_TIMEOUT_MS, topic);
+
+        pthread_mutex_lock(&g_brk_mutex);
+        if (g_brk[idx].state == BRK_CONNECTED &&
+            ++g_brk[idx].pub_timeouts >= MQTT_MAX_PUB_TIMEOUTS)
+        {
+            /* link is probably half-open: recycle the connection */
+            brk_begin_close_locked(idx, monotonic_sec(), MQTT_RETRY_AFTER_LOST_SEC,
+                                   "repeated publish timeouts");
+            force_reconnect = 1;
+        }
+        pthread_mutex_unlock(&g_brk_mutex);
+
+        if (force_reconnect)
+            brk_refresh_global_status();
+
+        return MQTTASYNC_FAILURE;
+    }
+
+    pthread_mutex_lock(&g_brk_mutex);
+    g_brk[idx].pub_timeouts = 0;
+    pthread_mutex_unlock(&g_brk_mutex);
+
+    return failed ? MQTTASYNC_FAILURE : MQTTASYNC_SUCCESS;
+}
+
+/* ---- Incoming command queue --------------------------------------------- */
+
+static void mqtt_cmd_enqueue(int broker, const void *payload, int payloadlen)
+{
+    mqtt_cmd_slot_t *slot;
+    int len = payloadlen;
+    int tail;
+
+    if (len < 0)
+        len = 0;
+    if (len >= MQTT_CMD_MAX_LEN)
+    {
+        LOG_WARN("[MQTT RX] command truncated from %d to %d bytes", payloadlen, MQTT_CMD_MAX_LEN - 1);
+        len = MQTT_CMD_MAX_LEN - 1;
+    }
+
+    pthread_mutex_lock(&cmd_mutex);
+
+    if (g_cmdq_count == MQTT_CMD_QUEUE_LEN)
+    {
+        LOG_WARN("[MQTT RX] command queue full, dropping oldest command");
+        g_cmdq_head = (g_cmdq_head + 1) % MQTT_CMD_QUEUE_LEN;
+        g_cmdq_count--;
+    }
+
+    tail = (g_cmdq_head + g_cmdq_count) % MQTT_CMD_QUEUE_LEN;
+    slot = &g_cmdq[tail];
+    slot->broker = broker;
+    if (len > 0 && payload)
+        memcpy(slot->data, payload, (size_t)len);
+    slot->data[len] = '\0';
+    g_cmdq_count++;
+
+    /* legacy mirror */
+    mqtt_cmd_broker = broker;
+    mqtt_cmd_recv = 1;
+
+    pthread_mutex_unlock(&cmd_mutex);
+}
+
+/* Returns 1 and fills out/broker if a command was waiting, else 0. */
+int mqtt_cmd_dequeue(char *out, size_t out_len, int *broker)
+{
+    int got = 0;
+
+    if (out == NULL || out_len == 0)
+        return 0;
+
+    pthread_mutex_lock(&cmd_mutex);
+    if (g_cmdq_count > 0)
+    {
+        mqtt_cmd_slot_t *slot = &g_cmdq[g_cmdq_head];
+
+        strncpy(out, slot->data, out_len - 1);
+        out[out_len - 1] = '\0';
+        if (broker)
+            *broker = slot->broker;
+
+        g_cmdq_head = (g_cmdq_head + 1) % MQTT_CMD_QUEUE_LEN;
+        g_cmdq_count--;
+        got = 1;
+    }
+    mqtt_cmd_recv = (g_cmdq_count > 0);
+    if (!mqtt_cmd_recv)
+        mqtt_cmd_broker = -1;
+    pthread_mutex_unlock(&cmd_mutex);
+
+    return got;
+}
 
 // static void on_connect_success(void *mqtt_ctx,
 //                                MQTTAsync_successData *resp)
@@ -195,124 +910,80 @@ extern volatile int mqtt_led_connected; /*Gokul added this for cloud status show
 static void on_connect_success(void *mqtt_ctx, MQTTAsync_successData *resp)
 {
     mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
+    int idx = brk_index(conn);
+    int accepted = 0;
+    time_t now;
 
-    if (conn == NULL)
+    (void)resp;
+
+    if (idx < 0)
     {
-        LOG_ERROR("[MQTT] Connection success callback received NULL context");
+        LOG_ERROR("[MQTT] Connection success callback received unknown context");
         return;
     }
 
-    conn->connected = true;
-    mqtt_led_connected = 1;
+    brk_cb_enter(idx);
+    now = monotonic_sec();
 
-    LOG_INFO("[MQTT] Connected to %s, Port = %d", conn->cfg.broker_ip, conn->cfg.broker_port);
-
-    /* =========================================================
-     * mqtt1 CONNECTED
-     * ========================================================= */
-    if (conn == &mqtt1)
+    pthread_mutex_lock(&g_brk_mutex);
+    if (g_brk[idx].state == BRK_CONNECTING)
     {
-        mqtt1_connecting = 0;
-        mqtt1_connect_start = 0;
+        g_brk[idx].state = BRK_CONNECTED;
+        g_brk[idx].retry_delay = MQTT_RETRY_MIN_SEC; /* reset back-off */
+        g_brk[idx].pub_timeouts = 0;
+        conn->connected = true;
+        brk_sync_legacy_locked(idx);
+        accepted = 1;
+    }
+    pthread_mutex_unlock(&g_brk_mutex);
 
-        mqtt1_mqtt_conn_time = monotonic_sec();
-
-        /*
-         * Reset ONLY mqtt1 publish timers.
-         * Do not touch mqtt2 timers.
-         */
-        last_mqtt1_inst = monotonic_sec();
-        last_mqtt1_profile = monotonic_sec();
-        last_mqtt1_hc = monotonic_sec();
-        last_mqtt1_modbus = monotonic_sec();
-
-        LOG_INFO("[MQTT] mqtt1 connected");
-        LOG_INFO("[SCHEDULER] mqtt1 publish timers reset");
-
-        /*
-         * Keep mqtt1 state information.
-         */
-        if (certificate_path_check_mqtt1 == 0)
-            current_active_mqtt1 = 0;
-        else
-            current_active_mqtt1 = 1;
-
-        /*
-         * Subscribe using mqtt1 client.
-         */
-        mqtt_subscribe_topic(&mqtt1);
-
-        /*
-         * IMPORTANT:
-         * Do NOT:
-         *     current_active = &mqtt1;
-         *     mqtt2.connected = false;
-         *     mqtt2_need_destroy = 1;
-         *     reset mqtt2 timers;
-         */
-
-        update_mqtt_status("connected");
-        update_mqtt_time(0);
+    if (!accepted)
+    {
+        /* Late success after watchdog timeout: client is already scheduled for destroy. */
+        LOG_WARN("[MQTT] %s: stale connect success ignored (state=%s)", brk_name(idx),
+                 mqtt_broker_state_str(conn));
+        brk_cb_exit(idx);
+        return;
     }
 
-    /* =========================================================
-     * mqtt2 CONNECTED
-     * ========================================================= */
-    else if (conn == &mqtt2)
+    LOG_INFO("[MQTT] %s connected to %s, Port = %d", brk_name(idx), conn->cfg.broker_ip, conn->cfg.broker_port);
+
+    if (idx == 0)
     {
-        mqtt2_connecting = 0;
-        mqtt2_connect_start = 0;
+        mqtt1_mqtt_conn_time = now;
 
-        secn_mqtt_conn_time = monotonic_sec();
+        /* Reset ONLY mqtt1 publish timers. */
+        last_mqtt1_inst = now;
+        last_mqtt1_profile = now;
+        last_mqtt1_hc = now;
+        last_mqtt1_modbus = now;
 
-        /*
-         * Reset ONLY mqtt2 publish timers.
-         * Do not touch mqtt1 timers.
-         */
-        last_mqtt2_inst = monotonic_sec();
-        last_mqtt2_profile = monotonic_sec();
-        last_mqtt2_hc = monotonic_sec();
-        last_mqtt2_modbus = monotonic_sec();
+        current_active_mqtt1 = (certificate_path_check_mqtt1 == 0) ? 0 : 1;
+    }
+    else
+    {
+        secn_mqtt_conn_time = now;
 
-        LOG_INFO("[MQTT] mqtt2 connected");
-        LOG_INFO("[SCHEDULER] mqtt2 publish timers reset");
+        /* Reset ONLY mqtt2 publish timers. */
+        last_mqtt2_inst = now;
+        last_mqtt2_profile = now;
+        last_mqtt2_hc = now;
+        last_mqtt2_modbus = now;
 
-        /*
-         * Keep mqtt2 state information.
-         */
-        if (certificate_path_check_mqtt2 == 0)
-            current_active_mqtt2 = 0;
-        else
-            current_active_mqtt2 = 1;
-
-        /*
-         * Subscribe using mqtt2 client.
-         */
-        mqtt_subscribe_topic(&mqtt2);
-
-        /*
-         * IMPORTANT:
-         * Do NOT:
-         *     if (!mqtt1.connected)
-         *     current_active = &mqtt2;
-         *     mqtt1.connected = false;
-         *     reset mqtt1 timers;
-         */
-
-        update_mqtt_status("connected");
-        update_mqtt_time(0);
+        current_active_mqtt2 = (certificate_path_check_mqtt2 == 0) ? 0 : 1;
     }
 
-    /* =========================================================
-     * FINAL STATE
-     * ========================================================= */
+    LOG_INFO("[SCHEDULER] %s publish timers reset", brk_name(idx));
 
-    LOG_INFO("[STATE] mqtt1 connected=%d connecting=%d | "
-             "mqtt2 connected=%d connecting=%d",
-             mqtt1.connected,
-             mqtt1_connecting,
-             mqtt2.connected,
-             mqtt2_connecting);
+    /* Calling MQTTAsync_subscribe from a callback is allowed by Paho. */
+    mqtt_subscribe_topic(conn);
+
+    /* Flags only - the worker thread writes Redis (hiredis is not thread safe). */
+    brk_refresh_global_status();
+
+    LOG_INFO("[STATE] mqtt1=%s | mqtt2=%s", mqtt_broker_state_str(&mqtt1), mqtt_broker_state_str(&mqtt2));
+
+    brk_cb_exit(idx);
 }
 
 static const char *mqtt_connack_reason_string(int reason)
@@ -382,32 +1053,30 @@ static const char *mqtt_client_error_string(int rc)
 static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
 {
     mqtt_conn_t *conn = (mqtt_conn_t *)mqtt_ctx;
-    conn->connected = false;
-    const char *broker_type;
+    int idx = brk_index(conn);
+    int handled = 0;
 
-    if (conn == &mqtt1)
-        broker_type = "mqtt1";
-    else if (conn == &mqtt2)
-        broker_type = "mqtt2";
-    else
-        broker_type = "UNKNOWN";
+    if (idx < 0)
+    {
+        LOG_ERROR("[MQTT] Connection failure callback received unknown context");
+        return;
+    }
+
+    brk_cb_enter(idx);
 
     LOG_ERROR("==========================================================");
     LOG_ERROR("[MQTT] CONNECTION FAILED");
-    LOG_ERROR("Broker Type : %s", broker_type);
+    LOG_ERROR("Broker Type : %s", brk_name(idx));
     LOG_ERROR("Broker IP   : %s", conn->cfg.broker_ip);
     LOG_ERROR("Broker Port : %d", conn->cfg.broker_port);
-    LOG_ERROR("Client ID   : %s", conn->cfg.client_id ? conn->cfg.client_id : "<NOT SET>");
+    LOG_ERROR("Client ID   : %s", conn->cfg.client_id[0] ? conn->cfg.client_id : "<NOT SET>");
     LOG_ERROR("SSL Enabled : %d", conn->cfg.enable_ssl);
-    LOG_ERROR("Username    : %s", conn->cfg.username ? conn->cfg.username : "<NOT SET>");
-    LOG_ERROR("Password    : %s", conn->cfg.password ? "SET" : "NOT SET");
+    LOG_ERROR("Username    : %s", conn->cfg.username[0] ? conn->cfg.username : "<NOT SET>");
+    LOG_ERROR("Password    : %s", conn->cfg.password[0] ? "SET" : "NOT SET");
 
     if (resp != NULL)
     {
         LOG_ERROR("Paho Error Code : %d", resp->code);
-        /*
-         * Paho client/library error.
-         */
         if (resp->code < 0)
         {
             LOG_ERROR("Error Category : Paho MQTT Client");
@@ -415,82 +1084,34 @@ static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
         }
         else
         {
-            /*
-             * Positive code returned by the connection failure callback.
-             * Log it, but do not blindly treat every positive Paho
-             * callback code as a CONNACK code.
-             */
             LOG_ERROR("Error Category : MQTT Connection/Broker");
             LOG_ERROR("Error Detail   : Connection rejected/failed");
             if (resp->code <= 5)
-            {
                 LOG_ERROR("Possible MQTT Reason : %s", mqtt_connack_reason_string(resp->code));
-            }
         }
-
-        if (resp->message != NULL)
-        {
-            LOG_ERROR("Paho Message   : %s", resp->message);
-        }
-        else
-        {
-            LOG_ERROR("Paho Message   : <NONE>");
-        }
+        LOG_ERROR("Paho Message   : %s", resp->message ? resp->message : "<NONE>");
     }
     else
     {
         LOG_ERROR("Failure Data   : <NULL>");
         LOG_ERROR("Error Detail   : Paho did not provide failure details");
     }
-
     LOG_ERROR("==========================================================");
 
-    /*
-     * Existing mqtt1 handling
-     */
-    if (conn == &mqtt1)
+    pthread_mutex_lock(&g_brk_mutex);
+    if (g_brk[idx].state == BRK_CONNECTING)
     {
-        mqtt1_connecting = 0;
-        mqtt1_connect_start = 0;
-        last_mqtt1_try = monotonic_sec();
-        mqtt1_need_destroy = 1;
-        mqtt1_destroy_time = monotonic_sec();
-        mqtt1_mqtt_conn_time = 0;
-        current_active_mqtt1 = -1;
+        brk_begin_close_locked(idx, monotonic_sec(), brk_next_backoff_locked(idx), "connect failed");
+        handled = 1;
     }
+    pthread_mutex_unlock(&g_brk_mutex);
 
-    /*
-     * Existing mqtt2 handling
-     */
-    else if (conn == &mqtt2)
-    {
-        mqtt2_connecting = 0;
-        mqtt2_connect_start = 0;
-        last_mqtt2_try = monotonic_sec();
-        mqtt2_need_destroy = 1;
-        mqtt2_destroy_time = monotonic_sec();
-        secn_mqtt_conn_time = 0;
-        current_active_mqtt2 = -1;
-    }
+    if (!handled)
+        LOG_WARN("[MQTT] %s: stale connect failure ignored", brk_name(idx));
 
-    if (current_active == conn)
-    {
-        current_active = NULL;
-        cur_active_mqtt = -1;
-    }
+    brk_refresh_global_status(); /* flags only, no Redis here */
 
-    if (mqtt1.connected || mqtt2.connected)
-    {
-        update_mqtt_status("connected");
-        mqtt_led_connected = 1;
-    }
-    else
-    {
-        update_mqtt_status("disconnected");
-        mqtt_led_connected = 0;
-    }
-
-    update_mqtt_time(0);
+    brk_cb_exit(idx);
 }
 
 // static void on_connect_failure(void *mqtt_ctx, MQTTAsync_failureData *resp)
@@ -697,88 +1318,46 @@ void on_send_failure(void *context, MQTTAsync_failureData *response)
 void connectionLost(void *context, char *cause)
 {
     mqtt_conn_t *lost = (mqtt_conn_t *)context;
+    int idx = brk_index(lost);
+    int handled = 0;
 
-    const char *broker_type;
+    if (idx < 0)
+    {
+        LOG_ERROR("[MQTT] connectionLost received unknown context");
+        return;
+    }
 
-    if (lost == &mqtt1)
-        broker_type = "mqtt1";
-    else if (lost == &mqtt2)
-        broker_type = "mqtt2";
-    else
-        broker_type = "UNKNOWN";
+    brk_cb_enter(idx);
 
     LOG_ERROR("==========================================================");
     LOG_ERROR("[MQTT] CONNECTION LOST");
-    LOG_ERROR("Broker Type : %s", broker_type);
+    LOG_ERROR("Broker Type : %s", brk_name(idx));
     LOG_ERROR("Broker IP   : %s", lost->cfg.broker_ip);
     LOG_ERROR("Broker Port : %d", lost->cfg.broker_port);
-
-    if (cause != NULL)
-        LOG_ERROR("Disconnect Cause : %s", cause);
-    else
-        LOG_ERROR("Disconnect Cause : <NOT PROVIDED>");
-
+    LOG_ERROR("Disconnect Cause : %s", cause ? cause : "<NOT PROVIDED>");
     LOG_ERROR("==========================================================");
 
-    lost->connected = false;
-
-    if (current_active == lost)
+    pthread_mutex_lock(&g_brk_mutex);
+    if (g_brk[idx].state == BRK_CONNECTED || g_brk[idx].state == BRK_CONNECTING)
     {
-        current_active = NULL;
-        cur_active_mqtt = -1;
+        /* Only THIS broker's uptime is reset; the other broker is untouched. */
+        brk_begin_close_locked(idx, monotonic_sec(), MQTT_RETRY_AFTER_LOST_SEC, "connection lost");
+        handled = 1;
     }
+    pthread_mutex_unlock(&g_brk_mutex);
 
-    // update_mqtt_status("disconnected");
-    // if ((mqtt1.client && MQTTAsync_isConnected(mqtt1.client)) ||
-    //     (mqtt2.client && MQTTAsync_isConnected(mqtt2.client)))
-    if (mqtt1.connected || mqtt2.connected)
-    {
-        update_mqtt_status("connected");
-        mqtt_led_connected = 1;
-    }
-    else
-    {
-        update_mqtt_status("disconnected");
-        mqtt_led_connected = 0;
-    }
-    mqtt1_mqtt_conn_time = 0;
-    secn_mqtt_conn_time = 0;
+    if (!handled)
+        LOG_WARN("[MQTT] %s: stale connectionLost ignored", brk_name(idx));
 
-    update_mqtt_time(0);
+    /* Wake a publisher that may be waiting on this broker right now. */
+    pthread_once(&g_pub_once, pub_init_once);
+    pthread_mutex_lock(&g_pub_mutex);
+    pthread_cond_broadcast(&g_pub_cond);
+    pthread_mutex_unlock(&g_pub_mutex);
 
-    // ONLY FLAG — NO DESTROY HERE
-    // if (lost == &mqtt1)
-    // {
-    //     mqtt1_connecting = 0;
-    //     mqtt1_need_destroy = 1;
-    //     mqtt1_destroy_time = time(NULL);
-    // }
-    // else if (lost == &mqtt2)
-    // {
-    //     mqtt2_connecting = 0;
-    //     mqtt2_need_destroy = 1;
-    //     mqtt2_destroy_time = time(NULL);
-    // }
+    brk_refresh_global_status(); /* flags only, no Redis here */
 
-    if (lost == &mqtt1)
-    {
-        mqtt1_connecting = 0;
-        mqtt1_need_destroy = 1;
-        // mqtt1_destroy_time = time(NULL);
-        mqtt1_destroy_time = monotonic_sec();
-        // mqtt1_lost_time = time(NULL);
-        mqtt1_lost_time = monotonic_sec();
-    }
-
-    if (lost == &mqtt2)
-    {
-        mqtt2_connecting = 0;
-        mqtt2_need_destroy = 1;
-        // mqtt2_destroy_time = time(NULL);
-        mqtt2_destroy_time = monotonic_sec();
-        // mqtt2_lost_time = time(NULL);
-        mqtt2_lost_time = monotonic_sec();
-    }
+    brk_cb_exit(idx);
 }
 
 /**
@@ -911,64 +1490,34 @@ void configure_tls(mqtt_conn_t *conn)
     MQTTAsync_SSLOptions *ssl = &conn->ssl_opts;
     mqtt_cfg_t *cfg = &conn->cfg;
 
-    static char ca_path[MAX_STR_LEN];
-    static char cert_path[MAX_STR_LEN];
-    static char key_path[MAX_STR_LEN];
-
-    const char *base_path;
-
     *ssl = (MQTTAsync_SSLOptions)MQTTAsync_SSLOptions_initializer;
 
-    // ---- Select certificate directory ----
-    printf("Certificate Path Check mqtt1 Variable = %d\n", certificate_path_check_mqtt1);
-    printf("Certificate Path Check mqtt2 Variable = %d\n", certificate_path_check_mqtt2);
-    printf("Variables changed!!!\n");
-    // if (cfg->mqtt1 == 1)
-    // {
-    //     if (certificate_path_check_mqtt1 == 0)
-    //         base_path = MQTT_1_CERTS_LOC;
-    //     else
-    //         base_path = MQTT_2_CERTS_LOC;
-    // }
-    // else
-    // {
-    //     if (certificate_path_check_mqtt2 == 0)
-    //         base_path = MQTT_1_CERTS_LOC;
-    //     else
-    //         base_path = MQTT_2_CERTS_LOC;
-    // }
-
-    // LOG_INFO("[TLS] Using cert path: %s", base_path);
-
-    // ---- Server certificate verification ----
+    /*
+     * Point directly at this connection's own config strings.
+     * (Earlier versions used function-static buffers, which were shared by
+     *  mqtt1 and mqtt2, so the second broker overwrote the first one's paths.)
+     */
     ssl->enableServerCertAuth = (cfg->insecure == 0) ? 1 : 0;
 
-    // ---- CA Certificate ----
-    if (strlen(cfg->ca_certificate) > 0)
+    if (cfg->ca_certificate[0] != '\0')
     {
-        snprintf(ca_path, sizeof(ca_path), "%s", cfg->ca_certificate);
-        ssl->trustStore = ca_path;
+        ssl->trustStore = cfg->ca_certificate;
         LOG_INFO("[TLS] CA cert       : %s", ssl->trustStore);
     }
 
-    // ---- Client Certificate ----
-    if (strlen(cfg->client_certificate) > 0)
+    if (cfg->client_certificate[0] != '\0')
     {
-        snprintf(cert_path, sizeof(cert_path), "%s", cfg->client_certificate);
-        ssl->keyStore = cert_path;
+        ssl->keyStore = cfg->client_certificate;
         LOG_INFO("[TLS] Client cert   : %s", ssl->keyStore);
     }
 
-    // ---- Private Key ----
-    if (strlen(cfg->client_key) > 0)
+    if (cfg->client_key[0] != '\0')
     {
-        snprintf(key_path, sizeof(key_path), "%s", cfg->client_key);
-        ssl->privateKey = key_path;
+        ssl->privateKey = cfg->client_key;
         LOG_INFO("[TLS] Private key   : %s", ssl->privateKey);
     }
 
-    // ---- Key Password ----
-    if (cfg->encrypted_key && strlen(cfg->key_password) > 0)
+    if (cfg->encrypted_key && cfg->key_password[0] != '\0')
     {
         ssl->privateKeyPassword = cfg->key_password;
         LOG_INFO("[TLS] Key password  : SET");
@@ -978,56 +1527,82 @@ void configure_tls(mqtt_conn_t *conn)
         ssl->privateKeyPassword = NULL;
     }
 
-    // ---- TLS Version ----
     ssl->sslVersion = MQTT_SSL_VERSION_TLS_1_2;
-
     LOG_INFO("[TLS] TLS Version     : TLS 1.2");
 }
 
+/*
+ * mqtt_connect()
+ * --------------
+ * Starts ONE asynchronous connection attempt. Never blocks.
+ * Should only be called by the connection manager (worker thread).
+ */
 int mqtt_connect(mqtt_conn_t *conn)
 {
+    MQTTAsync_connectOptions opts = MQTTAsync_connectOptions_initializer;
     char url[256];
+    int rc;
+
+    if (conn == NULL)
+        return MQTTASYNC_NULL_PARAMETER;
+
+    if (conn->cfg.broker_ip[0] == '\0' || conn->cfg.broker_port <= 0 || conn->cfg.broker_port > 65535)
+    {
+        LOG_ERROR("[MQTT] Invalid broker config: ip='%s' port=%d", conn->cfg.broker_ip, conn->cfg.broker_port);
+        return MQTTASYNC_BAD_PROTOCOL;
+    }
 
     snprintf(url, sizeof(url), "%s://%s:%d",
              conn->cfg.enable_ssl ? "ssl" : "tcp",
              conn->cfg.broker_ip,
              conn->cfg.broker_port);
     LOG_INFO("URL CONNECTION ---> %s", url);
-    /* Create client only once */
-    // if (conn->client && conn->connected == false)
-    // {
-    //     MQTTAsync_destroy(&conn->client);
-    //     conn->client = NULL;
-    // }
+
+    pthread_mutex_lock(&mqtt_api_mutex);
+
+    /* The manager always destroys the old client first, so this is a fresh one. */
     if (conn->client == NULL)
     {
-        MQTTAsync_create(&conn->client,
-                         url,
-                         conn->cfg.client_id,
-                         MQTTCLIENT_PERSISTENCE_NONE,
-                         NULL);
+        rc = MQTTAsync_create(&conn->client, url, conn->cfg.client_id,
+                              MQTTCLIENT_PERSISTENCE_NONE, NULL);
+        if (rc != MQTTASYNC_SUCCESS)
+        {
+            conn->client = NULL;
+            pthread_mutex_unlock(&mqtt_api_mutex);
+            LOG_ERROR("[MQTT] MQTTAsync_create failed rc=%d (%s)", rc, mqtt_client_error_string(rc));
+            return rc;
+        }
 
-        MQTTAsync_setCallbacks(conn->client,
-                               conn,
-                               connectionLost,
-                               on_message_arrived,
-                               NULL);
+        rc = MQTTAsync_setCallbacks(conn->client, conn, connectionLost, on_message_arrived, NULL);
+        if (rc != MQTTASYNC_SUCCESS)
+        {
+            MQTTAsync_destroy(&conn->client);
+            conn->client = NULL;
+            pthread_mutex_unlock(&mqtt_api_mutex);
+            LOG_ERROR("[MQTT] MQTTAsync_setCallbacks failed rc=%d", rc);
+            return rc;
+        }
     }
 
-    MQTTAsync_connectOptions opts =
-        MQTTAsync_connectOptions_initializer;
+    /* Empty strings from Redis mean "not set" - don't send an empty username. */
+    if (conn->cfg.username[0] != '\0')
+    {
+        opts.username = conn->cfg.username;
+        opts.password = (conn->cfg.password[0] != '\0') ? conn->cfg.password : NULL;
+    }
 
-    opts.username = conn->cfg.username;
-    opts.password = conn->cfg.password;
-    opts.keepAliveInterval = conn->cfg.keep_alive;
-    opts.cleansession = conn->cfg.clean_session;
-
-    opts.connectTimeout = 5;
+    /* keepalive 0 = no keepalive = a dead link is never detected */
+    opts.keepAliveInterval = (conn->cfg.keep_alive > 0) ? conn->cfg.keep_alive : MQTT_DEFAULT_KEEPALIVE_SEC;
+    opts.cleansession = conn->cfg.clean_session ? 1 : 0;
+    opts.connectTimeout = MQTT_CONNECT_OPT_TIMEOUT_SEC;
     opts.retryInterval = 0;
+    opts.automaticReconnect = 0; /* reconnects are owned by the manager */
 
-    // opts.automaticReconnect = 1;
-    // opts.minRetryInterval = 3;
-    // opts.maxRetryInterval = 10;
+    /*
+     * Only try 3.1.1. With MQTTVERSION_DEFAULT Paho retries with 3.1 after a
+     * failure, which doubles the time an unreachable broker blocks the queue.
+     */
+    opts.MQTTVersion = MQTTVERSION_3_1_1;
 
     opts.onSuccess = on_connect_success;
     opts.onFailure = on_connect_failure;
@@ -1041,10 +1616,7 @@ int mqtt_connect(mqtt_conn_t *conn)
 
     conn->connected = false;
 
-    // return MQTTAsync_connect(conn->client, &opts);
-    pthread_mutex_lock(&mqtt_api_mutex);
-
-    int rc = MQTTAsync_connect(conn->client, &opts);
+    rc = MQTTAsync_connect(conn->client, &opts);
 
     pthread_mutex_unlock(&mqtt_api_mutex);
 
@@ -1123,91 +1695,95 @@ int mqtt_connect(mqtt_conn_t *conn)
 //     LOG_INFO("[FILE] Transfer complete");
 // }
 
+static int build_pub_topic(mqtt_conn_t *conn, int topic_type, char *out, size_t out_len)
+{
+    const char *base;
+
+    /* if/else instead of switch: safe even if two topic macros share a value */
+    if (topic_type == METER_DATA_TOPIC)
+        base = conn->cfg.cyclic_dlms_data_topic;
+    else if (topic_type == INST_DATA_TOPIC)
+        base = conn->cfg.inst_data_topic;
+    else if (topic_type == MODBUS_DATA_TOPIC)
+        base = conn->cfg.cyclic_modbus_data_topic;
+    else if (topic_type == HEALTH_DATA_TOPIC)
+        base = conn->cfg.health_check_data_topic;
+    else if (topic_type == CMD_ACK_TOPIC)
+        base = PUB_ACK_TOPIC; /* acknowledgements go to the dedicated ack topic */
+    else /* CMD_RESP_TOPIC and anything else */
+        base = conn->cfg.cmd_response_topic;
+
+    if (base == NULL || base[0] == '\0')
+    {
+        LOG_ERROR("[MQTT] %s: publish topic for type %d is not configured", brk_name(brk_index(conn)), topic_type);
+        return -1;
+    }
+
+    snprintf(out, out_len, "%s/%s", base, dcu_ser_num);
+    return 0;
+}
+
 void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 {
-    int rc;
     char pub_topic[256];
-    FILE *fp = fopen(filename, "rb");
+    unsigned char buffer[PAYLOAD_BUFFER_SIZE];
+    size_t bytes_read;
+    int chunks = 0;
+    int ok = 1;
+    FILE *fp;
 
-    if (!fp)
+    if (mqtt_cfg == NULL || filename == NULL)
+        return;
+
+    if (!mqtt_is_ready(mqtt_cfg))
     {
-        LOG_INFO("Failed to open file");
+        LOG_INFO("[MQTT] %s not connected - file %s not sent", brk_name(brk_index(mqtt_cfg)), filename);
         return;
     }
 
-    unsigned char buffer[PAYLOAD_BUFFER_SIZE];
-    size_t bytes_read;
+    if (build_pub_topic(mqtt_cfg, topic_type, pub_topic, sizeof(pub_topic)) != 0)
+        return;
 
-    while ((bytes_read = fread(buffer, 1, PAYLOAD_BUFFER_SIZE, fp)) > 0)
+    fp = fopen(filename, "rb");
+    if (!fp)
     {
-        unsigned char *payload = malloc(bytes_read);
-        if (!payload)
-            break;
+        LOG_ERROR("[MQTT] Failed to open file %s", filename);
+        return;
+    }
 
-        memcpy(payload, buffer, bytes_read);
-
-        MQTTAsync_message msg = MQTTAsync_message_initializer;
-        MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
-
-        msg.payload = payload;
-        msg.payloadlen = bytes_read;
-        msg.qos = mqtt_cfg->cfg.qos;
-        msg.retained = 0;
-
-        opts.onSuccess = on_send_success;
-        opts.onFailure = on_send_failure;
-        opts.context = payload;
-
-        pthread_mutex_lock(&mqtt_publish_mutex);
-        mqtt_publish_done = 0;
-        mqtt_publish_failed = 0;
-        pthread_mutex_unlock(&mqtt_publish_mutex);
-
-        if (topic_type == METER_DATA_TOPIC)
-        {
-            memset(pub_topic, 0, sizeof(pub_topic));
-            snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cyclic_dlms_data_topic, dcu_ser_num);
-        }
-        else if (topic_type == INST_DATA_TOPIC)
-        {
-            memset(pub_topic, 0, sizeof(pub_topic));
-            snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.inst_data_topic, dcu_ser_num);
-        }
-        else
-        {
-            memset(pub_topic, 0, sizeof(pub_topic));
-            snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cmd_response_topic, dcu_ser_num);
-        }
-
-        rc = MQTTAsync_sendMessage(mqtt_cfg->client, pub_topic, &msg, &opts);
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), fp)) > 0)
+    {
+        int rc = mqtt_publish_blocking(mqtt_cfg, pub_topic, buffer, (int)bytes_read);
 
         if (rc != MQTTASYNC_SUCCESS)
         {
-            free(payload);
-            LOG_ERROR("[MQTT] File chunk send failed, rc=%d", rc);
+            LOG_ERROR("[MQTT] %s: file chunk %d of %s failed rc=%d - aborting this file",
+                      brk_name(brk_index(mqtt_cfg)), chunks + 1, filename, rc);
+            ok = 0;
             break;
         }
+        chunks++;
+    }
 
-        pthread_mutex_lock(&mqtt_publish_mutex);
-        while (!mqtt_publish_done)
-            pthread_cond_wait(&mqtt_publish_cond, &mqtt_publish_mutex);
-
-        int publish_failed = mqtt_publish_failed;
-        pthread_mutex_unlock(&mqtt_publish_mutex);
-
-        if (publish_failed)
-        {
-            LOG_ERROR("[MQTT] File chunk publish failed");
-            break;
-        }
+    if (ferror(fp))
+    {
+        LOG_ERROR("[MQTT] Read error on %s", filename);
+        ok = 0;
     }
 
     fclose(fp);
 
+    if (!ok)
+        return;
+
     if (topic_type == METER_DATA_TOPIC)
-        LOG_INFO("[METER DATA Message] Transfer successfully completed");
+        LOG_INFO("[METER DATA Message] -> %s: %d chunk(s) sent", brk_name(brk_index(mqtt_cfg)), chunks);
     else if (topic_type == INST_DATA_TOPIC)
-        LOG_INFO("[INSTANTANEOUS DATA Message] Transfer successfully completed");
+        LOG_INFO("[INSTANTANEOUS DATA Message] -> %s: %d chunk(s) sent", brk_name(brk_index(mqtt_cfg)), chunks);
+    else
+        LOG_INFO("[FILE Message] -> %s: %d chunk(s) sent", brk_name(brk_index(mqtt_cfg)), chunks);
+
+    update_mqtt_time(1);
 }
 
 // void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
@@ -1298,70 +1874,28 @@ void mqtt_send_file(mqtt_conn_t *mqtt_cfg, const char *filename, int topic_type)
 
 void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, int topic_type)
 {
-    int rc;
-    char *payload = malloc(msg_size);
     char pub_topic[256];
+    int rc;
 
-    if (!payload)
+    if (mqtt_cfg == NULL || mqtt_msg == NULL || msg_size < 0)
     {
-        LOG_ERROR(stderr, "Memory allocation failed");
+        LOG_ERROR("[MQTT] mqtt_send_msg: invalid arguments");
         return;
     }
 
-    memcpy(payload, mqtt_msg, msg_size);
-
-    MQTTAsync_message msg = MQTTAsync_message_initializer;
-    MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
-
-    msg.payload = payload;
-    msg.payloadlen = msg_size;
-    msg.qos = mqtt_cfg->cfg.qos;
-    msg.retained = 0;
-
-    opts.onSuccess = on_send_success;
-    opts.onFailure = on_send_failure;
-    opts.context = payload;
-
-    pthread_mutex_lock(&mqtt_publish_mutex);
-    mqtt_publish_done = 0;
-    mqtt_publish_failed = 0;
-    pthread_mutex_unlock(&mqtt_publish_mutex);
-
-    if (topic_type == MODBUS_DATA_TOPIC)
+    if (!mqtt_is_ready(mqtt_cfg))
     {
-        memset(pub_topic, 0, sizeof(pub_topic));
-        snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cyclic_modbus_data_topic, dcu_ser_num);
-    }
-    else if (topic_type == HEALTH_DATA_TOPIC)
-    {
-        memset(pub_topic, 0, sizeof(pub_topic));
-        snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.health_check_data_topic, dcu_ser_num);
-    }
-    else
-    {
-        memset(pub_topic, 0, sizeof(pub_topic));
-        snprintf(pub_topic, sizeof(pub_topic), "%s/%s", mqtt_cfg->cfg.cmd_response_topic, dcu_ser_num);
+        LOG_INFO("[MQTT] %s not connected - message type %d not sent", brk_name(brk_index(mqtt_cfg)), topic_type);
+        return;
     }
 
-    rc = MQTTAsync_sendMessage(mqtt_cfg->client, pub_topic, &msg, &opts);
+    if (build_pub_topic(mqtt_cfg, topic_type, pub_topic, sizeof(pub_topic)) != 0)
+        return;
 
+    rc = mqtt_publish_blocking(mqtt_cfg, pub_topic, mqtt_msg, msg_size);
     if (rc != MQTTASYNC_SUCCESS)
     {
-        free(payload);
-        LOG_ERROR(stderr, "MQTT send failed, rc=%d", rc);
-        return;
-    }
-
-    pthread_mutex_lock(&mqtt_publish_mutex);
-    while (!mqtt_publish_done)
-        pthread_cond_wait(&mqtt_publish_cond, &mqtt_publish_mutex);
-
-    int publish_failed = mqtt_publish_failed;
-    pthread_mutex_unlock(&mqtt_publish_mutex);
-
-    if (publish_failed)
-    {
-        LOG_ERROR("[MQTT] Publish failed");
+        LOG_ERROR("[MQTT] %s: publish to %s failed rc=%d", brk_name(brk_index(mqtt_cfg)), pub_topic, rc);
         return;
     }
 
@@ -1369,7 +1903,7 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
         LOG_INFO("[MODBUS Message] Transfer successfully completed");
     else if (topic_type == HEALTH_DATA_TOPIC)
         LOG_INFO("[HEALTH CHECK Message] Transfer successfully completed");
-    else if (topic_type == PUB_ACK_TOPIC)
+    else if (topic_type == CMD_ACK_TOPIC)
         LOG_INFO("[PUBLISH ACKNOWLEDGEMENT Message] Transfer successfully completed");
     else
         LOG_INFO("[COMMAND RESPONSE Message] Transfer successfully completed");
@@ -1377,31 +1911,68 @@ void mqtt_send_msg(mqtt_conn_t *mqtt_cfg, const char *mqtt_msg, int msg_size, in
     update_mqtt_time(1);
 }
 
+static void sub_on_failure(void *context, MQTTAsync_failureData *response)
+{
+    mqtt_conn_t *conn = (mqtt_conn_t *)context;
+
+    LOG_ERROR("[MQTT] %s: SUBSCRIBE rejected, code=%d msg=%s", brk_name(brk_index(conn)),
+              response ? response->code : 0,
+              (response && response->message) ? response->message : "<none>");
+}
+
 void mqtt_subscribe_topic(mqtt_conn_t *mqtt_cfg)
 {
     char sub_topic[256];
-    MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
-    LOG_INFO("Topics\n");
+    char done_topics[MAX_SUB_TOPICS][256];
+    int done_count = 0;
+    int qos;
+
+    if (mqtt_cfg == NULL || mqtt_cfg->client == NULL)
+        return;
+
+    qos = mqtt_cfg->cfg.qos;
+    if (qos < 0 || qos > 2)
+        qos = 1;
 
     for (int i = 0; i < MAX_SUB_TOPICS; i++)
     {
-        // rithika 18Apr2026
-        memset(sub_topic, 0, sizeof(sub_topic));
+        MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
+        int dup = 0;
+        int rc;
+
+        if (mqtt_cfg->cfg.subscribe_topics[i][0] == '\0')
+            continue; /* not configured */
+
         snprintf(sub_topic, sizeof(sub_topic), "%s/%s", mqtt_cfg->cfg.subscribe_topics[i], dcu_ser_num);
 
-        int rc = MQTTAsync_subscribe(mqtt_cfg->client, sub_topic, mqtt_cfg->cfg.qos, &opts);
+        for (int j = 0; j < done_count; j++)
+        {
+            if (strcmp(done_topics[j], sub_topic) == 0)
+            {
+                dup = 1;
+                break;
+            }
+        }
+        if (dup)
+            continue; /* same topic configured twice */
 
+        opts.onFailure = sub_on_failure;
+        opts.context = mqtt_cfg;
+
+        rc = MQTTAsync_subscribe(mqtt_cfg->client, sub_topic, qos, &opts);
         if (rc != MQTTASYNC_SUCCESS)
         {
-            printf("Subscribe Topics Failed !!!\n");
-            LOG_ERROR(stderr, "Failed to subscribe the topic %s", sub_topic);
-            return;
+            LOG_ERROR("[MQTT] %s: failed to subscribe %s rc=%d", brk_name(brk_index(mqtt_cfg)), sub_topic, rc);
+            continue;
         }
-        printf("Topics Subscribed Successfully !!!\n");
-        LOG_INFO("%s\n", sub_topic);
+
+        snprintf(done_topics[done_count], sizeof(done_topics[0]), "%s", sub_topic);
+        done_count++;
+        LOG_INFO("[MQTT] %s: subscribe requested %s", brk_name(brk_index(mqtt_cfg)), sub_topic);
     }
 
-    LOG_INFO("subscribed successfully\n");
+    if (done_count == 0)
+        LOG_WARN("[MQTT] %s: no command topic subscribed", brk_name(brk_index(mqtt_cfg)));
 }
 
 /* -------------------------------------------------------------------------
@@ -3524,37 +4095,33 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 int on_message_arrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
 {
     mqtt_conn_t *conn = (mqtt_conn_t *)context;
-    pthread_mutex_lock(&cmd_mutex);
-    memset(mqtt_cmd_buffer, 0, sizeof(mqtt_cmd_buffer));
-    int len = message->payloadlen;
-    if (len >= sizeof(mqtt_cmd_buffer))
-        len = sizeof(mqtt_cmd_buffer) - 1;
+    int idx = brk_index(conn);
 
-    memcpy(mqtt_cmd_buffer, message->payload, len);
-    mqtt_cmd_buffer[len] = '\0';
-    if (conn == &mqtt1)
+    (void)topicLen;
+
+    if (idx >= 0)
+        brk_cb_enter(idx);
+
+    if (message != NULL)
     {
-        mqtt_cmd_broker = 0;
-        LOG_INFO("[MQTT RX] Message received from mqtt1");
-    }
-    else if (conn == &mqtt2)
-    {
-        mqtt_cmd_broker = 1;
-        LOG_INFO("[MQTT RX] Message received from mqtt2");
-    }
-    else
-    {
-        mqtt_cmd_broker = -1;
-        LOG_ERROR("[MQTT RX] Unknown MQTT broker");
+        LOG_INFO("[MQTT RX] Message received from %s (%d bytes) on %s", brk_name(idx),
+                 message->payloadlen, topicName ? topicName : "?");
+
+        if (idx >= 0)
+            mqtt_cmd_enqueue(idx, message->payload, message->payloadlen);
+        else
+            LOG_ERROR("[MQTT RX] Unknown MQTT broker - message dropped");
+
+        MQTTAsync_freeMessage(&message);
     }
 
-    mqtt_cmd_recv = 1;
-    pthread_mutex_unlock(&cmd_mutex);
+    if (topicName)
+        MQTTAsync_free(topicName);
 
-    MQTTAsync_freeMessage(&message);
-    MQTTAsync_free(topicName);
+    if (idx >= 0)
+        brk_cb_exit(idx);
 
-    return 1;
+    return 1; /* message handled - never let Paho redeliver in a loop */
 }
 
 // int update_mqtt_status(char *status)
