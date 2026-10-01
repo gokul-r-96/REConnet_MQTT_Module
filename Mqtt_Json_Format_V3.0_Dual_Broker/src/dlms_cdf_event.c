@@ -6,7 +6,6 @@ extern int ls_cmd_redis_resp;
 extern int billing_cmd_redis_resp;
 extern int midnight_cmd_redis_resp;
 
-
 /** Event type mapping table */
 static const EventTypeMap EVENT_TYPE_TABLE[] = {
     {1, "Voltage events", "0_0_96_11_0_255", "0_0_99_98_0_255"},
@@ -35,7 +34,6 @@ static const EventTypeMap *get_event_type_map(int event_type)
     }
     return NULL;
 }
-
 
 /*
  * Return the calendar date immediately after date (YYYY-MM-DD).
@@ -134,7 +132,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
 
     if (is_date_all && is_event_type_all)
     {
-       
+
         /* All events for current month - preserve existing behavior. */
         time_t now = time(NULL);
         struct tm *t = localtime(&now);
@@ -145,7 +143,7 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
     else if (!is_date_all && is_event_type_all)
     {
-      
+
         if (end_date && strcmp(end_date, start_date) != 0)
         {
             char next_date[16];
@@ -172,14 +170,14 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
     else if (is_date_all && !is_event_type_all)
     {
-       
+
         /* All events of a specific type (no date filter). */
         snprintf(where_clause, sizeof(where_clause),
                  "WHERE event_type = '%s'", event_type);
     }
     else
     {
-       
+
         if (end_date && strcmp(end_date, start_date) != 0)
         {
             char next_date[16];
@@ -243,8 +241,6 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
         sqlite3_close(db);
         return -1;
     }
-
-
 
     int entry_idx = 0;
 
@@ -321,44 +317,52 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
                 continue;
             }
 
-      char obis_hex[24];
+            char obis_hex[24];
 
-        if (obis_dec_to_hex(col_name, obis_hex) != 0)
-        {
-            LOG_WARN("Skipping invalid OBIS column: %s", col_name);
-            continue;
-        }
+            if (obis_dec_to_hex(col_name, obis_hex) != 0)
+            {
+                LOG_WARN("Skipping invalid OBIS column: %s", col_name);
+                continue;
+            }
 
-        EventParam *p = &entry->params[param_idx];
+            if (strcasecmp(val_str, "FFFF") == 0 ||
+                strcasecmp(val_str, "FFFFFFFF") == 0)
+            {
+                LOG_DEBUG("Skipping OBIS %s because value is %s",
+                          col_name, val_str);
+                continue;
+            }
 
-        snprintf(p->obis_code,
-                 sizeof(p->obis_code),
-                 "%s",
-                 col_name);
+            EventParam *p = &entry->params[param_idx];
 
-        snprintf(p->obis_hex,
-                 sizeof(p->obis_hex),
-                 "%s",
-                 obis_hex);
+            snprintf(p->obis_code,
+                     sizeof(p->obis_code),
+                     "%s",
+                     col_name);
 
-        snprintf(p->value,
-                 sizeof(p->value),
-                 "%s",
-                 val_str);
+            snprintf(p->obis_hex,
+                     sizeof(p->obis_hex),
+                     "%s",
+                     obis_hex);
 
-        /*
-         * No param_code / param_name / unit mapping.
-         * These fields are intentionally left unused.
-         */
+            snprintf(p->value,
+                     sizeof(p->value),
+                     "%s",
+                     val_str);
 
-        LOG_DEBUG("Event entry[%d] param[%d]: OBIS=%s HEX=%s VALUE=%s",
-                  entry_idx,
-                  param_idx,
-                  p->obis_code,
-                  p->obis_hex,
-                  p->value);
+            /*
+             * No param_code / param_name / unit mapping.
+             * These fields are intentionally left unused.
+             */
 
-        param_idx++;
+            LOG_DEBUG("Event entry[%d] param[%d]: OBIS=%s HEX=%s VALUE=%s",
+                      entry_idx,
+                      param_idx,
+                      p->obis_code,
+                      p->obis_hex,
+                      p->value);
+
+            param_idx++;
         }
 
         entry->param_count = param_idx;
@@ -366,8 +370,6 @@ static int read_event_data(const char *db_path, const MeterStatus *status,
     }
 
     event_data->entry_count = entry_idx;
-
- 
 
     sqlite3_finalize(stmt);
 
@@ -521,6 +523,10 @@ static void json_write_d5(FILE *fp,
             if (p->obis_hex[0] == '\0')
                 continue;
 
+            if (strcasecmp(p->value, "FFFF") == 0 ||
+                strcasecmp(p->value, "FFFFFFFF") == 0)
+                continue;
+
             if (!first_param)
                 fprintf(fp, ",\n");
 
@@ -569,6 +575,10 @@ static void json_write_d5(FILE *fp,
             const EventParam *p = &entry->params[j];
 
             if (p->obis_hex[0] == '\0')
+                continue;
+
+            if (strcasecmp(p->value, "FFFF") == 0 ||
+                strcasecmp(p->value, "FFFFFFFF") == 0)
                 continue;
 
             if (!first_value)
@@ -714,9 +724,9 @@ int generate_event_log_json(redisContext *ctx, const char *serial,
     /* 2. Read Event data */
     EventData event_data;
     memset(&event_data, 0, sizeof(event_data));
-    
+
     if (read_event_data(sqlite_db_path, &status, serial, start_date, end_date,
-                         event_type, ctx, &event_data) != 0)
+                        event_type, ctx, &event_data) != 0)
     {
         LOG_ERROR("Cannot read event data for meter %s", serial);
     }
@@ -734,8 +744,8 @@ int generate_event_log_json(redisContext *ctx, const char *serial,
     if (get_base_path(base_path, sizeof(base_path)) == 0)
     {
         snprintf(out_path, sizeof(out_path),
-              "%s/data/EVENT_%s_%s_%s_%s.json",
-              base_path, serial, start_date, end_date, event_type);
+                 "%s/data/EVENT_%s_%s_%s_%s.json",
+                 base_path, serial, start_date, end_date, event_type);
     }
     FILE *fp = fopen(out_path, "w");
     if (!fp)
