@@ -132,8 +132,7 @@
 //     return len;
 // }
 
-
-static int build_cmd_reply(cmd_request_t cmd,int status,const char *msg,char *out_buf)
+static int build_cmd_reply(cmd_request_t cmd, int status, const char *msg, char *out_buf)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *data = cJSON_CreateObject();
@@ -148,7 +147,7 @@ static int build_cmd_reply(cmd_request_t cmd,int status,const char *msg,char *ou
     if (dcu_sn != NULL)
     {
         cJSON_AddStringToObject(data, "DCU", dcu_sn);
-        free(dcu_sn);    // Only if redis_hget() returns allocated memory
+        free(dcu_sn); // Only if redis_hget() returns allocated memory
     }
     else
     {
@@ -189,7 +188,7 @@ static int build_cmd_reply(cmd_request_t cmd,int status,const char *msg,char *ou
     strcpy(out_buf, json);
 
     int len = strlen(json);
-printf("!!!!!!!!!!!!!!!!!!!!!\n\n%s\n length %d",out_buf, len );
+    printf("!!!!!!!!!!!!!!!!!!!!!\n\n%s\n length %d", out_buf, len);
     free(json);
     cJSON_Delete(root);
 
@@ -260,13 +259,12 @@ int ack_msg_reply(int seq_num, char *out_buf)
     cJSON_Delete(root);
 
     if (dcu_sn != NULL && strcmp(dcu_sn, "UNKNOWN") != 0)
-        free(dcu_sn);   // Only if redis_hget() allocates memory
+        free(dcu_sn); // Only if redis_hget() allocates memory
 
     // redisFree(ctx);
 
     return len;
 }
-
 
 int reset_resp_msg(cmd_request_t cmd, char *out_buf)
 {

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "../include/general.h"
 #include <pthread.h>
+#include <time.h>
 // #include "logger.h"
 
 #define MQTT_1_CERTS_LOC "/usr/cms/config/mqtt_1_certs"
@@ -91,6 +92,8 @@ pthread_mutex_t cmd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 extern volatile int mqtt_led_connected; /*Gokul added this for cloud status showing the broker is connected --> 04/09/2026*/
 
+int time_sync_set_time = -1;
+
 /* =========================================================================
  * ROBUST DUAL-BROKER CONNECTION MANAGER
  * -------------------------------------------------------------------------
@@ -124,18 +127,18 @@ extern volatile int mqtt_led_connected; /*Gokul added this for cloud status show
 #include <errno.h>
 #include <stdint.h>
 
-#define MQTT_CONNECT_OPT_TIMEOUT_SEC 5   /* Paho connectTimeout per attempt      */
-#define MQTT_CONNECT_WATCHDOG_SEC 20     /* hard upper bound for one attempt     */
-#define MQTT_RETRY_SEC 60                /* fixed wait between attempts          */
+#define MQTT_CONNECT_OPT_TIMEOUT_SEC 5    /* Paho connectTimeout per attempt      */
+#define MQTT_CONNECT_WATCHDOG_SEC 20      /* hard upper bound for one attempt     */
+#define MQTT_RETRY_SEC 60                 /* fixed wait between attempts          */
 #define MQTT_RETRY_MIN_SEC MQTT_RETRY_SEC /* kept for the state table init        */
 #define MQTT_RETRY_MAX_SEC MQTT_RETRY_SEC
 #define MQTT_RETRY_AFTER_LOST_SEC MQTT_RETRY_SEC /* lost link: same 60 s wait     */
-#define MQTT_DESTROY_DELAY_SEC 2         /* let Paho threads settle before free  */
-#define MQTT_PUBLISH_TIMEOUT_MS 10000    /* max wait for one publish completion  */
-#define MQTT_PUBLISH_POLL_MS 500         /* re-check link state while waiting    */
-#define MQTT_MAX_PUB_TIMEOUTS 3          /* consecutive timeouts -> reconnect    */
-#define MQTT_DEFAULT_KEEPALIVE_SEC 60    /* used when Redis gives 0 / garbage    */
-#define MQTT_CMD_QUEUE_LEN 8             /* buffered incoming commands           */
+#define MQTT_DESTROY_DELAY_SEC 2                 /* let Paho threads settle before free  */
+#define MQTT_PUBLISH_TIMEOUT_MS 10000            /* max wait for one publish completion  */
+#define MQTT_PUBLISH_POLL_MS 500                 /* re-check link state while waiting    */
+#define MQTT_MAX_PUB_TIMEOUTS 3                  /* consecutive timeouts -> reconnect    */
+#define MQTT_DEFAULT_KEEPALIVE_SEC 60            /* used when Redis gives 0 / garbage    */
+#define MQTT_CMD_QUEUE_LEN 8                     /* buffered incoming commands           */
 #define MQTT_CMD_MAX_LEN 4096
 
 typedef enum
@@ -187,7 +190,6 @@ static int g_cmdq_count = 0;
 
 /* Forward declarations (defined further down in this file / in general.h) */
 
-
 static int brk_index(const mqtt_conn_t *conn)
 {
     if (conn == &mqtt1)
@@ -204,7 +206,8 @@ static mqtt_conn_t *brk_conn(int idx)
 
 static const char *brk_name(int idx)
 {
-    return (idx == 0) ? "mqtt1" : (idx == 1) ? "mqtt2" : "UNKNOWN";
+    return (idx == 0) ? "mqtt1" : (idx == 1) ? "mqtt2"
+                                             : "UNKNOWN";
 }
 
 static const char *brk_state_name(brk_state_t s)
@@ -1701,7 +1704,7 @@ static int build_pub_topic(mqtt_conn_t *conn, int topic_type, char *out, size_t 
         base = conn->cfg.health_check_data_topic;
     else if (topic_type == CMD_ACK_TOPIC)
         base = PUB_ACK_TOPIC; /* acknowledgements go to the dedicated ack topic */
-    else /* CMD_RESP_TOPIC and anything else */
+    else                      /* CMD_RESP_TOPIC and anything else */
         base = conn->cfg.cmd_response_topic;
 
     if (base == NULL || base[0] == '\0')
@@ -2374,6 +2377,40 @@ int parse_cmd_request(const char *json_str, cmd_request_t *cmd)
         }
     }
 
+    if (strcmp(cmd->type, "SET_METER_CFG") == 0 &&
+        strcmp(cmd->data_type_req, "OD_TIMESYNC_MESSAGE") == 0)
+    {
+        cJSON *set_time;
+        cJSON *adjust_sec;
+
+        set_time = cJSON_GetObjectItemCaseSensitive(data, "set_time");
+        adjust_sec = cJSON_GetObjectItemCaseSensitive(data, "adjust_sec");
+
+        if (cJSON_IsString(set_time) && set_time->valuestring != NULL)
+        {
+            time_sync_set_time = 1;
+
+            LOG_INFO("OD_TIMESYNC_MESSAGE: set_time = %s",
+                     set_time->valuestring);
+        }
+        else if (cJSON_IsString(adjust_sec) && adjust_sec->valuestring != NULL)
+        {
+            time_sync_set_time = 0;
+
+            LOG_INFO("OD_TIMESYNC_MESSAGE: adjust_sec = %s",
+                     adjust_sec->valuestring);
+        }
+        else
+        {
+            LOG_ERROR("OD_TIMESYNC_MESSAGE: Neither set_time nor adjust_sec found");
+
+            cJSON_Delete(root);
+            cmd->root = NULL;
+            cmd->data = NULL;
+
+            return -1;
+        }
+    }
     /* --------------------------------------------------------
      * ReadModbus specific parsing
      * -------------------------------------------------------- */
@@ -2452,8 +2489,6 @@ int parse_cmd_request(const char *json_str, cmd_request_t *cmd)
 
     return 0;
 }
-
-#include <time.h>
 
 int calculate_num_days(const char *start_date, const char *end_date)
 {
@@ -2579,6 +2614,124 @@ int generate_redis_list(cmd_request_t cmd)
         cJSON_AddStringToObject(data, "num_days", "1");
     }
 
+    else if (!strcmp(cmd.data_type_req, "OD_TIMESYNC_MESSAGE"))
+    {
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
+        char timestamp[32];
+        time_t now;
+        struct tm *tm_info;
+
+        now = time(NULL);
+        tm_info = localtime(&now);
+
+        if (tm_info == NULL)
+        {
+            LOG_ERROR("Failed to get current time");
+            cJSON_Delete(root);
+            return -1;
+        }
+
+        strftime(timestamp, sizeof(timestamp),
+                 "%d-%m-%Y %H:%M:%S", tm_info);
+
+        cJSON_AddStringToObject(root, "serial_no", dcu_sn);
+        cJSON_AddStringToObject(root, "msgType", "OD_TIMESYNC_MESSAGE");
+
+        if (time_sync_set_time)
+        {
+            cJSON_AddStringToObject(data, "set_time", cmd.args[3]);
+        }
+        else
+        {
+            cJSON_AddStringToObject(data, "adjust_sec", cmd.args[3]);
+        }
+
+        cJSON_AddStringToObject(data, "timestamp", timestamp);
+    }
+
+    else if (!strcmp(cmd.data_type_req, "OD_PROF_CAP_PERIOD_MESSAGE"))
+    {
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
+        char timestamp[32];
+        time_t now;
+        struct tm *tm_info;
+
+        now = time(NULL);
+        tm_info = localtime(&now);
+
+        if (tm_info == NULL)
+        {
+            LOG_ERROR("Failed to get current time");
+            cJSON_Delete(root);
+            return -1;
+        }
+
+        strftime(timestamp, sizeof(timestamp),
+                 "%d-%m-%Y %H:%M:%S", tm_info);
+
+        cJSON_AddStringToObject(root, "serial_no", dcu_sn);
+        cJSON_AddStringToObject(root, "msgType", "OD_PROF_CAP_PERIOD_MESSAGE");
+
+        int period_int = atoi(cmd.args[3]);
+
+        if (period_int <= 0)
+        {
+            LOG_ERROR("Invalid period: %s", cmd.args[3]);
+            cJSON_Delete(root);
+            return -1;
+        }
+
+        int period = period_int * 60;
+        char per_Str[32];
+
+        snprintf(per_Str, sizeof(per_Str), "%d", period);
+        cJSON_AddStringToObject(data, "period", per_Str);
+
+        cJSON_AddStringToObject(data, "timestamp", timestamp);
+    }
+
+    else if (!strcmp(cmd.data_type_req, "DEMAND_PERIOD_MESSAGE"))
+    {
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+
+        char timestamp[32];
+        time_t now;
+        struct tm *tm_info;
+
+        now = time(NULL);
+        tm_info = localtime(&now);
+
+        if (tm_info == NULL)
+        {
+            LOG_ERROR("Failed to get current time");
+            cJSON_Delete(root);
+            return -1;
+        }
+
+        strftime(timestamp, sizeof(timestamp),
+                 "%d-%m-%Y %H:%M:%S", tm_info);
+
+        cJSON_AddStringToObject(root, "serial_no", dcu_sn);
+        cJSON_AddStringToObject(root, "msgType", "OD_DEMAND_PERIOD_MESSAGE");
+
+        int period_int = atoi(cmd.args[3]);
+        if (period_int <= 0)
+        {
+            LOG_ERROR("Invalid period: %s", cmd.args[3]);
+            cJSON_Delete(root);
+            return -1;
+        }
+        int period = period_int * 60;
+        char per_Str[32];
+
+        snprintf(per_Str, sizeof(per_Str), "%d", period);
+        cJSON_AddStringToObject(data, "period", per_Str);
+
+        cJSON_AddStringToObject(data, "timestamp", timestamp);
+    }
+
     cJSON_AddStringToObject(root, "init_source", "mqtt");
 
     cJSON_AddStringToObject(data, "port_id", status.port);
@@ -2604,6 +2757,7 @@ int generate_redis_list(cmd_request_t cmd)
 
     cJSON_Delete(root);
     free(json_str);
+    return 0;
 }
 
 int is_list_empty()
@@ -3009,6 +3163,56 @@ int read_redis_resp(mqtt_conn_t *conn)
             {
                 LOG_INFO("Invalid start_date %s", start_date);
             }
+        }
+        else if (strcmp(data_type->valuestring, "OD_TIMESYNC_MESSAGE") == 0)
+        {
+            cJSON *status =
+                cJSON_GetObjectItemCaseSensitive(root, "status");
+            if (strcmp(status->valuestring, "SUCCESS") == 0)
+            {
+                LOG_INFO("OD_TIMESYNC_MESSAGE succes");
+                msg_size = success_resp_msg(cpy_cmd, output_msg);
+            }
+            else
+            {
+                LOG_ERROR("OD_TIMESYNC_MESSAGE failed");
+                msg_size = failure_resp_msg(cpy_cmd, output_msg);
+            }
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
+
+        else if (strcmp(data_type->valuestring, "OD_PROF_CAP_PERIOD_MESSAGE") == 0)
+        {
+            cJSON *status =
+                cJSON_GetObjectItemCaseSensitive(root, "status");
+            if (strcmp(status->valuestring, "SUCCESS") == 0)
+            {
+                LOG_INFO("OD_PROF_CAP_PERIOD_MESSAGE succes");
+                msg_size = success_resp_msg(cpy_cmd, output_msg);
+            }
+            else
+            {
+                LOG_ERROR("OD_PROF_CAP_PERIOD_MESSAGE failed");
+                msg_size = failure_resp_msg(cpy_cmd, output_msg);
+            }
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
+
+        else if (strcmp(data_type->valuestring, "OD_DEMAND_PERIOD_MESSAGE") == 0)
+        {
+            cJSON *status =
+                cJSON_GetObjectItemCaseSensitive(root, "status");
+            if (strcmp(status->valuestring, "SUCCESS") == 0)
+            {
+                LOG_INFO("OD_DEMAND_PERIOD_MESSAGE succes");
+                msg_size = success_resp_msg(cpy_cmd, output_msg);
+            }
+            else
+            {
+                LOG_ERROR("OD_DEMAND_PERIOD_MESSAGE failed");
+                msg_size = failure_resp_msg(cpy_cmd, output_msg);
+            }
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
     }
 
@@ -3633,7 +3837,6 @@ int parse_getday_cmd(cmd_request_t cmd, mqtt_conn_t *conn)
         int month;
         int year;
         char event_type[32];
-        
 
         if (sscanf(cmd.args[2], "%d-%d-%d", &day, &month, &year) == 3)
         {
@@ -3756,7 +3959,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         LOG_INFO("ARG_%02u      : %s", i + 1, cmd.args[i]);
 
     // if (cmd.arg_count > 1)
-    if ((!strcmp(cmd.type, "GetDay") || !strcmp(cmd.type, "FetchDay")) && cmd.arg_count > 1)
+    if ((!strcmp(cmd.type, "GetDay") || !strcmp(cmd.type, "FetchDay") || !strcmp(cmd.type, "SET_METER_CFG")) && cmd.arg_count > 1)
     {
 
         printf("------------------------------Received Meter Serial : %s\n", cmd.args[1]);
@@ -3782,7 +3985,7 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
     }
 
     if (strcmp(cmd.type, "GetDay") && strcmp(cmd.type, "FetchDay") && strcmp(cmd.type, "Reset") && strcmp(cmd.type, "ReadModbus") && strcmp(cmd.type, "get_cfg") && strcmp(cmd.type, "set_cfg") &&
-        strcmp(cmd.type, "START_TRANS_MODE") && strcmp(cmd.type, "STOP_TRANS_MODE"))
+        strcmp(cmd.type, "START_TRANS_MODE") && strcmp(cmd.type, "STOP_TRANS_MODE") && strcmp(cmd.type, "SET_METER_CFG"))
     {
         LOG_INFO("Unknown cmd_type");
         msg_size = unknown_req_resp_msg(cmd, output_msg);
@@ -3831,6 +4034,11 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         else if (!strcmp(cmd.type, "START_TRANS_MODE") || !strcmp(cmd.type, "STOP_TRANS_MODE"))
         {
             msg_size = ack_msg_reply(TRANS_MODE_ACK_CODE, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if (!strcmp(cmd.type, "SET_METER_CFG"))
+        {
+            msg_size = ack_msg_reply(1003, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
         }
     }
@@ -3895,6 +4103,29 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 
         check_redis_resp = 1;
         generate_redis_list(cmd);
+    }
+
+    else if (!strcmp(cmd.type, "SET_METER_CFG") && cmd.args[0][0] != '\0')
+    {
+        Fetchday_cmd_broker = broker;
+        /*Serial Number check for the incoming messages*/
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+        if (strcmp(cmd.args[0], dcu_sn) != 0)
+        {
+            msg_size = unknown_ser_num(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+            return;
+        }
+
+        check_redis_resp = 1;
+        int ret = generate_redis_list(cmd);
+        if (ret == -1)
+        {
+            check_redis_resp = 0;
+
+            msg_size = failure_resp_msg(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
     }
 
     else if (!strcmp(cmd.type, "ReadModbus"))
