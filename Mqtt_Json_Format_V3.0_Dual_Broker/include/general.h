@@ -551,6 +551,20 @@ int on_message_arrived(void *context,
                        MQTTAsync_message *message);
 int success_resp_msg_cdf(redisContext *ctx, resp_msg resp, char *out_buf);
 int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker);
+static const char *mqtt_client_error_string(int rc);
+int mqtt_connect(mqtt_conn_t *conn);
+int update_mqtt_status(char *status);
+
+/* Public API (add these prototypes to general.h) */
+void mqtt_conn_manager_poll(void);
+void mqtt_conn_manager_shutdown(void);
+int mqtt_is_ready(mqtt_conn_t *conn);
+const char *mqtt_broker_state_str(mqtt_conn_t *conn);
+int mqtt_cmd_dequeue(char *out, size_t out_len, int *broker);
+
+/* Transparent mode handler (set_cfg_request.c) - add to get_set_cfg.h / general.h */
+int trans_mode_request(redisContext *ctx, cmd_request_t *cmd);
+#define TRANS_MODE_ACK_CODE 1009
 #ifndef MONOTONIC_SEC_DEFINED
 #define MONOTONIC_SEC_DEFINED
 

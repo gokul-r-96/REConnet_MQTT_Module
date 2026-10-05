@@ -186,16 +186,7 @@ static int g_cmdq_head = 0;
 static int g_cmdq_count = 0;
 
 /* Forward declarations (defined further down in this file / in general.h) */
-static const char *mqtt_client_error_string(int rc);
-int mqtt_connect(mqtt_conn_t *conn);
-int update_mqtt_status(char *status);
 
-/* Public API (add these prototypes to general.h) */
-void mqtt_conn_manager_poll(void);
-void mqtt_conn_manager_shutdown(void);
-int mqtt_is_ready(mqtt_conn_t *conn);
-const char *mqtt_broker_state_str(mqtt_conn_t *conn);
-int mqtt_cmd_dequeue(char *out, size_t out_len, int *broker);
 
 static int brk_index(const mqtt_conn_t *conn)
 {
@@ -3790,7 +3781,8 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         }
     }
 
-    if (strcmp(cmd.type, "GetDay") && strcmp(cmd.type, "FetchDay") && strcmp(cmd.type, "Reset") && strcmp(cmd.type, "ReadModbus") && strcmp(cmd.type, "get_cfg") && strcmp(cmd.type, "set_cfg"))
+    if (strcmp(cmd.type, "GetDay") && strcmp(cmd.type, "FetchDay") && strcmp(cmd.type, "Reset") && strcmp(cmd.type, "ReadModbus") && strcmp(cmd.type, "get_cfg") && strcmp(cmd.type, "set_cfg") &&
+        strcmp(cmd.type, "START_TRANS_MODE") && strcmp(cmd.type, "STOP_TRANS_MODE"))
     {
         LOG_INFO("Unknown cmd_type");
         msg_size = unknown_req_resp_msg(cmd, output_msg);
@@ -3834,6 +3826,11 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         else if (!strcmp(cmd.type, "Reset"))
         {
             msg_size = ack_msg_reply(1003, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
+        }
+        else if (!strcmp(cmd.type, "START_TRANS_MODE") || !strcmp(cmd.type, "STOP_TRANS_MODE"))
+        {
+            msg_size = ack_msg_reply(TRANS_MODE_ACK_CODE, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_ACK_TOPIC);
         }
     }
@@ -4010,6 +4007,47 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
             msg_size = failure_resp_msg(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
+        if (cmd.root)
+        {
+            cJSON_Delete(cmd.root);
+            cmd.root = NULL;
+            cmd.data = NULL;
+        }
+        return 0;
+    }
+
+    else if (!strcmp(cmd.type, "START_TRANS_MODE") || !strcmp(cmd.type, "STOP_TRANS_MODE"))
+    {
+        char *dcu_sn = redis_hget(ctx, "dcu_info", "serial_num");
+        cJSON *dcu_item = cJSON_GetObjectItemCaseSensitive(cmd.data, "DCU");
+        const char *req_dcu = (cJSON_IsString(dcu_item) && dcu_item->valuestring) ? dcu_item->valuestring : cmd.args[0];
+        int rc;
+
+        if (dcu_sn == NULL || req_dcu == NULL || strcmp(req_dcu, dcu_sn) != 0)
+        {
+            LOG_ERROR("[TRANS] DCU serial mismatch (request=%s, dcu=%s)",
+                      req_dcu ? req_dcu : "<none>", dcu_sn ? dcu_sn : "<none>");
+            msg_size = unknown_ser_num(cmd, output_msg);
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
+        else
+        {
+            rc = trans_mode_request(ctx, &cmd);
+
+            if (rc == 0)
+            {
+                LOG_INFO("[TRANS] %s %s accepted", cmd.type, cmd.data_type_req);
+                msg_size = success_resp_msg(cmd, output_msg);
+            }
+            else
+            {
+                LOG_ERROR("[TRANS] %s %s rejected (rc=%d%s)", cmd.type, cmd.data_type_req, rc,
+                          rc == -2 ? ", FULL not supported yet" : "");
+                msg_size = failure_resp_msg(cmd, output_msg);
+            }
+            mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+        }
+
         if (cmd.root)
         {
             cJSON_Delete(cmd.root);
