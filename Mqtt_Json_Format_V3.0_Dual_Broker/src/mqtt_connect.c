@@ -2522,6 +2522,50 @@ int calculate_num_days(const char *start_date, const char *end_date)
     return (int)((end_time - start_time) / (24 * 60 * 60)) + 1;
 }
 
+static int validate_set_time(const char *time_str)
+{
+    int day, month, year;
+    int hour, minute, second;
+    char extra;
+
+    if (time_str == NULL)
+        return -1;
+
+    /*
+     * Check exact format:
+     * DD-MM-YYYY HH:MM:SS
+     *
+     * extra is used to detect additional characters.
+     */
+    if (sscanf(time_str, "%2d-%2d-%4d %2d:%2d:%2d%c",
+               &day, &month, &year,
+               &hour, &minute, &second, &extra) != 6)
+    {
+        return -1;
+    }
+
+    /* Basic range validation */
+    if (year < 2000 || year > 2100)
+        return -1;
+
+    if (month < 1 || month > 12)
+        return -1;
+
+    if (day < 1 || day > 31)
+        return -1;
+
+    if (hour < 0 || hour > 23)
+        return -1;
+
+    if (minute < 0 || minute > 59)
+        return -1;
+
+    if (second < 0 || second > 59)
+        return -1;
+
+    return 0;
+}
+
 int generate_redis_list(cmd_request_t cmd)
 {
     cpy_cmd = cmd;
@@ -2640,6 +2684,16 @@ int generate_redis_list(cmd_request_t cmd)
 
         if (time_sync_set_time)
         {
+            /* Validate SET_TIME */
+            if (validate_set_time(cmd.args[3]) != 0)
+            {
+                LOG_ERROR("Invalid set_time format: '%s'",
+                          cmd.args[3]);
+
+                cJSON_Delete(root);
+                return -1;
+            }
+
             cJSON_AddStringToObject(data, "set_time", cmd.args[3]);
         }
         else
