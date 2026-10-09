@@ -45,7 +45,7 @@ volatile int mqtt_led_connected = 0;
 
 extern int check_redis_resp;
 extern time_t check_redis_resp_since;
-#define FETCHDAY_TIMEOUT_SEC 6000 /* F7: give up waiting for the DLMS poller */
+#define FETCHDAY_TIMEOUT_SEC 600 /* F7: give up waiting for the DLMS poller */
 void fetchday_reset_state(void);
 /*Gokul added the below variables for mqtt connecting --> 02/05/2026 */
 int mqtt1_connecting = 0;
