@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <hiredis/hiredis.h>
 #include "../include/general.h"
 
@@ -136,6 +137,98 @@ static int redis_hget(redisContext *ctx,
     return 0;
 }
 
+/*
+ * clean_modem_field()
+ * -------------------
+ * The modem scripts store the raw AT response in Redis, e.g.
+ *   imei     = "\r\n860710088983823\r\n\r\nOK\r\n"
+ *   operator = "\r\nViIndia\r\n\r\nOK "
+ * Printed as-is, the CR/LF break the JSON (a raw newline inside a JSON string
+ * is invalid) and "OK" ends up in the value. Keep only the useful text:
+ *   - the first line that is not empty, "OK", "ERROR" or an echoed "AT+..."
+ *   - for a line like  +COPS: 0,0,"Vi India",7  the part inside the quotes
+ *   - digits_only (IMEI): only 0-9
+ *   - otherwise: no control characters, quotes or backslashes, trimmed
+ * Works in place (the result is never longer than the input).
+ */
+static void clean_modem_field(char *s, int digits_only)
+{
+    char *line, *end, *next, *q1, *q2, *w, *r;
+    size_t n = 0;
+    int found = 0;
+
+    if (s == NULL)
+        return;
+
+    line = s;
+    end = s;
+    while (*line)
+    {
+        end = line;
+        while (*end && *end != '\r' && *end != '\n')
+            end++;
+        next = end;
+        while (*next == '\r' || *next == '\n')
+            next++;
+
+        while (line < end && isspace((unsigned char)*line))
+            line++;
+        while (end > line && isspace((unsigned char)end[-1]))
+            end--;
+        n = (size_t)(end - line);
+
+        if (n == 0 ||
+            (n == 2 && memcmp(line, "OK", 2) == 0) ||
+            (n == 5 && memcmp(line, "ERROR", 5) == 0) ||
+            (n >= 3 && (memcmp(line, "AT+", 3) == 0 || memcmp(line, "at+", 3) == 0)))
+        {
+            line = next;
+            continue;
+        }
+        found = 1;
+        break;
+    }
+
+    if (!found)
+    {
+        s[0] = '\0';
+        return;
+    }
+
+    /* +COPS: 0,0,"Vi India",7  ->  Vi India */
+    q1 = memchr(line, '"', n);
+    if (q1 != NULL)
+    {
+        q2 = memchr(q1 + 1, '"', (size_t)(end - q1 - 1));
+        if (q2 != NULL)
+        {
+            line = q1 + 1;
+            n = (size_t)(q2 - line);
+        }
+    }
+
+    memmove(s, line, n);
+    s[n] = '\0';
+
+    /* filter characters */
+    for (r = s, w = s; *r; r++)
+    {
+        unsigned char c = (unsigned char)*r;
+
+        if (digits_only ? isdigit(c) : !(iscntrl(c) || c == '"' || c == '\\'))
+            *w++ = (char)c;
+    }
+    *w = '\0';
+
+    /* final trim */
+    while (w > s && isspace((unsigned char)w[-1]))
+        *--w = '\0';
+    for (r = s; *r && isspace((unsigned char)*r); r++)
+        ;
+    if (r != s)
+        memmove(s, r, strlen(r) + 1);
+}
+
 /**
  * @brief  Populate dcu_info_t from Redis hashes dcu_info and dcu_uptime.
  */
@@ -151,6 +244,7 @@ static int fetch_dcu_info(redisContext *ctx, dcu_info_t *info)
     redis_hget(ctx, HASH_DCU_INFO, "fw_ver", info->firmware, sizeof(info->firmware));
     redis_hget(ctx, HASH_DCU_INFO, "dcu_loc", info->dcu_location,sizeof(info->dcu_location));
     redis_hget(ctx, "modem_status", "imei", info->modem_imei, sizeof(info->modem_imei));
+    clean_modem_field(info->modem_imei, 1); /* raw AT response -> digits only */
     redis_hget(ctx, HASH_GENERAL_CDF, "attribute1", info->attr1, sizeof(info->attr1));
     redis_hget(ctx, HASH_GENERAL_CDF, "attribute2", info->attr2, sizeof(info->attr2));
     redis_hget(ctx, HASH_GENERAL_CDF, "attribute3", info->attr3, sizeof(info->attr3));
@@ -219,6 +313,7 @@ static int fetch_dcu_status(redisContext *ctx, dcu_status_t *st)
         snprintf(st->connected_on, sizeof(st->connected_on), "MODEM");
         redis_hget(ctx, HASH_MODEM_STATUS, "active_sim", st->active_sim, sizeof(st->active_sim));
         redis_hget(ctx, HASH_MODEM_STATUS, "operator", st->isp, sizeof(st->isp));
+        clean_modem_field(st->isp, 0); /* raw AT response -> operator name only */
         LOG_INFO("fetch_dcu_status: PPP ON, SIM=%s ISP=%s", st->active_sim, st->isp);
     }
     else

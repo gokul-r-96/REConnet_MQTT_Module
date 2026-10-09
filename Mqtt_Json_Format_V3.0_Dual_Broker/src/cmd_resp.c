@@ -132,7 +132,10 @@
 //     return len;
 // }
 
-static int build_cmd_reply(cmd_request_t cmd, int status, const char *msg, char *out_buf)
+/* param / reason are optional (NULL or "" = left out). They tell MDAS which
+ * DATA key failed; CMD_STATUS / CMD_MSG keep the spec text. */
+static int build_cmd_reply_ex(cmd_request_t cmd, int status, const char *msg,
+                              const char *param, const char *reason, char *out_buf)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON *data = cJSON_CreateObject();
@@ -180,6 +183,10 @@ static int build_cmd_reply(cmd_request_t cmd, int status, const char *msg, char 
 
     cJSON_AddNumberToObject(data, "CMD_STATUS", status);
     cJSON_AddStringToObject(data, "CMD_MSG", msg);
+    if (param && param[0])
+        cJSON_AddStringToObject(data, "PARAM", param);
+    if (reason && reason[0])
+        cJSON_AddStringToObject(data, "REASON", reason);
 
     cJSON_AddItemToObject(root, "DATA", data);
 
@@ -193,6 +200,11 @@ static int build_cmd_reply(cmd_request_t cmd, int status, const char *msg, char 
     cJSON_Delete(root);
 
     return len;
+}
+
+static int build_cmd_reply(cmd_request_t cmd, int status, const char *msg, char *out_buf)
+{
+    return build_cmd_reply_ex(cmd, status, msg, NULL, NULL, out_buf);
 }
 
 int success_resp_msg(cmd_request_t cmd, char *out_buf)
@@ -210,6 +222,12 @@ int failure_resp_msg(cmd_request_t cmd, char *out_buf)
     return build_cmd_reply(cmd, 10, "FAILED", out_buf);
 }
 
+/* CMD_STATUS 10 with the failing parameter and reason */
+int failure_resp_msg_detail(cmd_request_t cmd, const char *param, const char *reason, char *out_buf)
+{
+    return build_cmd_reply_ex(cmd, 10, "FAILED", param, reason, out_buf);
+}
+
 int invalid_metsn_resp_msg(cmd_request_t cmd, char *out_buf)
 {
     return build_cmd_reply(cmd, 3, "Invalid meter name", out_buf);
@@ -223,6 +241,18 @@ int unknown_req_resp_msg(cmd_request_t cmd, char *out_buf)
 int unknown_ser_num(cmd_request_t cmd, char *out_buf)
 {
     return build_cmd_reply(cmd, 5, "Invalid DCU Serial Number", out_buf);
+}
+
+/* CMD_STATUS 8: missing mandatory key, unknown key, duplicate key (spec 6.1) */
+int invalid_param_resp_msg(cmd_request_t cmd, const char *param, const char *reason, char *out_buf)
+{
+    return build_cmd_reply_ex(cmd, 8, "Invalid parameter", param, reason, out_buf);
+}
+
+/* CMD_STATUS 9: value has the wrong type / format or is out of range (spec 6.1) */
+int invalid_param_value_resp_msg(cmd_request_t cmd, const char *param, const char *reason, char *out_buf)
+{
+    return build_cmd_reply_ex(cmd, 9, "Invalid parameter value", param, reason, out_buf);
 }
 
 int ack_msg_reply(int seq_num, char *out_buf)

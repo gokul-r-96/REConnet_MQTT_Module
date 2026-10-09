@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdarg.h>
 #include <time.h>
 #include "../include/general.h"
@@ -247,6 +248,98 @@ void jbuf_append_numeric_value(jbuf_t *jb, const char *val_str)
 // }
 
 
+/*
+ * clean_modem_field()
+ * -------------------
+ * The modem scripts store the raw AT response in Redis, e.g.
+ *   imei     = "\r\n860710088983823\r\n\r\nOK\r\n"
+ *   operator = "\r\nViIndia\r\n\r\nOK "
+ * Printed as-is, the CR/LF break the JSON (a raw newline inside a JSON string
+ * is invalid) and "OK" ends up in the value. Keep only the useful text:
+ *   - the first line that is not empty, "OK", "ERROR" or an echoed "AT+..."
+ *   - for a line like  +COPS: 0,0,"Vi India",7  the part inside the quotes
+ *   - digits_only (IMEI): only 0-9
+ *   - otherwise: no control characters, quotes or backslashes, trimmed
+ * Works in place (the result is never longer than the input).
+ */
+static void clean_modem_field(char *s, int digits_only)
+{
+    char *line, *end, *next, *q1, *q2, *w, *r;
+    size_t n = 0;
+    int found = 0;
+
+    if (s == NULL)
+        return;
+
+    line = s;
+    end = s;
+    while (*line)
+    {
+        end = line;
+        while (*end && *end != '\r' && *end != '\n')
+            end++;
+        next = end;
+        while (*next == '\r' || *next == '\n')
+            next++;
+
+        while (line < end && isspace((unsigned char)*line))
+            line++;
+        while (end > line && isspace((unsigned char)end[-1]))
+            end--;
+        n = (size_t)(end - line);
+
+        if (n == 0 ||
+            (n == 2 && memcmp(line, "OK", 2) == 0) ||
+            (n == 5 && memcmp(line, "ERROR", 5) == 0) ||
+            (n >= 3 && (memcmp(line, "AT+", 3) == 0 || memcmp(line, "at+", 3) == 0)))
+        {
+            line = next;
+            continue;
+        }
+        found = 1;
+        break;
+    }
+
+    if (!found)
+    {
+        s[0] = '\0';
+        return;
+    }
+
+    /* +COPS: 0,0,"Vi India",7  ->  Vi India */
+    q1 = memchr(line, '"', n);
+    if (q1 != NULL)
+    {
+        q2 = memchr(q1 + 1, '"', (size_t)(end - q1 - 1));
+        if (q2 != NULL)
+        {
+            line = q1 + 1;
+            n = (size_t)(q2 - line);
+        }
+    }
+
+    memmove(s, line, n);
+    s[n] = '\0';
+
+    /* filter characters */
+    for (r = s, w = s; *r; r++)
+    {
+        unsigned char c = (unsigned char)*r;
+
+        if (digits_only ? isdigit(c) : !(iscntrl(c) || c == '"' || c == '\\'))
+            *w++ = (char)c;
+    }
+    *w = '\0';
+
+    /* final trim */
+    while (w > s && isspace((unsigned char)w[-1]))
+        *--w = '\0';
+    for (r = s; *r && isspace((unsigned char)*r); r++)
+        ;
+    if (r != s)
+        memmove(s, r, strlen(r) + 1);
+}
+
 void export_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
 {
     const char *key = "dcu_info";
@@ -267,6 +360,7 @@ void export_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
     rget_str(ctx, key, "model",       model,    sizeof(model));
     rget_str(ctx, key, "fw_ver",      fw_ver,   sizeof(fw_ver));
     rget_str(ctx, "modem_status", "imei", imei, sizeof(imei));
+    clean_modem_field(imei, 1); /* raw AT response -> digits only */
 
     /* Current timestamp */
     char datetime[32];
@@ -1150,6 +1244,7 @@ void export_cmd_dcu_nameplate(jbuf_t *jb, redisContext *ctx)
 
     if (rget_str(ctx, "modem_status", "imei", buf, sizeof(buf)))
     {
+        clean_modem_field(buf, 1); /* raw AT response -> digits only */
         jbuf_append(jb, ",\"IMEI\":");
         jbuf_append_escaped(jb, buf);
     }

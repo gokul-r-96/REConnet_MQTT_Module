@@ -115,6 +115,38 @@ static int json_str_equals(cJSON *data, const char *key, const char *word)
 }
 
 /*
+ * Failure reason of the last set_cfg
+ * ----------------------------------
+ * A handler that fails calls set_cfg_fail(param, fmt, ...) instead of a bare
+ * "return -1", so processServerMsg() can tell the broker WHICH parameter
+ * failed (DATA.PARAM / DATA.REASON in the FAILED reply).
+ */
+static char g_set_cfg_err_param[32];
+static char g_set_cfg_err_reason[160];
+
+static void set_cfg_clear_error(void)
+{
+    g_set_cfg_err_param[0] = '\0';
+    g_set_cfg_err_reason[0] = '\0';
+}
+
+static int set_cfg_fail(const char *param, const char *fmt, ...)
+{
+    va_list ap;
+
+    snprintf(g_set_cfg_err_param, sizeof(g_set_cfg_err_param), "%s", param ? param : "");
+    va_start(ap, fmt);
+    vsnprintf(g_set_cfg_err_reason, sizeof(g_set_cfg_err_reason), fmt, ap);
+    va_end(ap);
+
+    LOG_ERROR("set_cfg failed: param=%s reason=%s", g_set_cfg_err_param, g_set_cfg_err_reason);
+    return -1;
+}
+
+const char *set_cfg_last_error_param(void) { return g_set_cfg_err_param; }
+const char *set_cfg_last_error_reason(void) { return g_set_cfg_err_reason; }
+
+/*
  * hset_int_field()
  * ----------------
  * Common integer setter used by every set_*_cfg():
@@ -123,8 +155,8 @@ static int json_str_equals(cJSON *data, const char *key, const char *word)
  * (previously atoi() silently stored "abc" as 0).
  * Returns 1 = written, 0 = key absent, -1 = invalid value.
  */
-static int hset_int_field(redisContext *ctx, cJSON *data, const char *json_key,
-                          const char *hash, const char *field)
+static int hset_int_field_scaled(redisContext *ctx, cJSON *data, const char *json_key,
+                                 const char *hash, const char *field, int multiplier)
 {
     redisReply *reply;
     int value = 0;
@@ -139,12 +171,27 @@ static int hset_int_field(redisContext *ctx, cJSON *data, const char *json_key,
         return -1;
     }
 
+    if (multiplier != 1)
+    {
+        LOG_INFO("set_cfg: %s=%d -> %s %s = %d", json_key, value, hash, field, value * multiplier);
+        value *= multiplier;
+    }
+
     reply = redisCommand(ctx, "HSET %s %s %d", hash, field, value);
     if (reply)
         freeReplyObject(reply);
 
     return 1;
 }
+
+static int hset_int_field(redisContext *ctx, cJSON *data, const char *json_key,
+                          const char *hash, const char *field)
+{
+    return hset_int_field_scaled(ctx, data, json_key, hash, field, 1);
+}
+
+/* RESP_TIMEOUT arrives in seconds (1-30) and is stored in Redis in ms */
+#define RESP_TIMEOUT_SCALE 1000
 
 /* Mandatory selector (SIM_SLOT, IPSEC_TUNNEL, FTP_SERVER, SERIAL_PORT, NTP_SERVER):
  * accepts 1 / "1" / 2 / "2". Returns 0 and sets *out, or -1. */
@@ -153,15 +200,9 @@ static int get_selector_1_2(cJSON *data, const char *json_key, int *out)
     int v = 0;
 
     if (json_get_int_value(data, json_key, 0, &v) != JSON_INT_OK)
-    {
-        LOG_ERROR("set_cfg: %s missing or not a number", json_key);
-        return -1;
-    }
+        return set_cfg_fail(json_key, "%s missing or not a number", json_key);
     if (v != 1 && v != 2)
-    {
-        LOG_ERROR("set_cfg: %s must be 1 or 2, got %d", json_key, v);
-        return -1;
-    }
+        return set_cfg_fail(json_key, "%s must be 1 or 2, got %d", json_key, v);
 
     *out = v;
     return 0;
@@ -170,7 +211,6 @@ static int get_selector_1_2(cJSON *data, const char *json_key, int *out)
 int set_mqtt_cfg(redisContext *ctx, cJSON *data, int mqtt1)
 {
     printf("Entering into mqtt config setting!!!\n");
-
     char *str = cJSON_Print(data);
     printf("DATA JSON = %s\n", str);
     free(str);
@@ -183,24 +223,16 @@ int set_mqtt_cfg(redisContext *ctx, cJSON *data, int mqtt1)
         return -1;
 
     /*-------------------------------------------------------
-     * Find the required MQTT hash
-     * mqtt1 = 1 -> mqtt_0_cfg or mqtt_1_cfg having mqtt1=1
-     * mqtt1 = 0 -> mqtt_0_cfg or mqtt_1_cfg having mqtt1=0
+     * Same mapping main.c uses when it loads the brokers:
+     *   MQTT_BROKER_1 / PRIMARY   (mqtt1 = 1) -> mqtt_0_cfg
+     *   MQTT_BROKER_2 / SECONDARY (mqtt1 = 0) -> mqtt_1_cfg
+     * (The old lookup by the "mqtt1" field returned -1 -> FAILED whenever
+     *  no hash had mqtt1 == 0/1 as expected.)
      *------------------------------------------------------*/
-    for (int i = 0; i < 2; i++)
-    {
-        char tmp[32];
-        sprintf(tmp, "mqtt_%d_cfg", i);
+    snprintf(hash, sizeof(hash), "%s", mqtt1 ? "mqtt_0_cfg" : "mqtt_1_cfg");
 
-        if (rget_int(ctx, tmp, "mqtt1", -1) == mqtt1)
-        {
-            strcpy(hash, tmp);
-            break;
-        }
-    }
-
-    if (hash[0] == '\0')
-        return -1;
+    if (!rhash_exists(ctx, hash))
+        return set_cfg_fail("DATA_TYPE", "Redis hash %s does not exist", hash);
 
 #define UPDATE_STR(JSON_KEY, REDIS_KEY)                               \
     do                                                                \
@@ -235,20 +267,11 @@ int set_mqtt_cfg(redisContext *ctx, cJSON *data, int mqtt1)
 #undef UPDATE_STR
 #undef UPDATE_INT
 
-    /* Restart MQTT process */
-    reply = redisCommand(ctx, "SADD proc_restart re_mqtt_proc");
-    if (reply)
-    {
-        if (reply->type == REDIS_REPLY_INTEGER)
-        {
-            if (reply->integer == 1)
-                LOG_INFO("Restart requested for re_mqtt_proc");
-            else
-                LOG_INFO("Restart already pending for re_mqtt_proc");
-        }
-
-        freeReplyObject(reply);
-    }
+    /* No reply and no restart here: the SUCCESS reply has to reach the broker
+     * BEFORE re_mqtt_proc is restarted, otherwise it is lost with the
+     * connection. processServerMsg() sends the reply and then calls
+     * set_cfg_after_reply(), which requests the restart. */
+    LOG_INFO("MQTT configuration written to %s, restart deferred until reply is sent", hash);
 
     return 0;
 }
@@ -306,7 +329,34 @@ int set_modem_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for ppp_monitor.sh");
             }
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart ppp_monitor.sh");
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web network");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for network");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for network");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web network");
     }
 
     return 0;
@@ -399,7 +449,30 @@ int set_ipsec_cfg(redisContext *ctx, cJSON *data)
             else
                 LOG_INFO("Restart already pending for ipsec_monitor.sh");
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart ipsec_monitor.sh");
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web network");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+                LOG_INFO("Restart requested for network");
+            else
+                LOG_INFO("Restart already pending for network");
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web network");
     }
 
     return 0;
@@ -473,7 +546,7 @@ int set_ntp_cfg(redisContext *ctx, cJSON *data)
     if (interval_kind == NTP_INTERVAL_INVALID)
     {
         LOG_ERROR("set_ntp_cfg: invalid NTP_INTERVAL (allowed: \"1\", \"7\", \"NOW\")");
-        return -1;
+        return set_cfg_fail("NTP_INTERVAL", "NTP_INTERVAL must be \"1\", \"7\" or \"NOW\"");
     }
 
 #define UPDATE_STR(JSON_KEY, REDIS_FMT)                          \
@@ -543,7 +616,34 @@ int set_ntp_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for ntp_time_sync.sh");
             }
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart ntp_time_sync.sh");
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web network");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for network");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for network");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web network");
     }
 
     return 0;
@@ -621,7 +721,34 @@ int set_iec104_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for iec104_module");
             }
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart iec104_module");
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web upstream");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for upstream");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for upstream");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web upstream");
     }
 
     return 0;
@@ -702,7 +829,34 @@ int set_iec101_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for iec101_module");
             }
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart iec101_module");
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web upstream");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for upstream");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for upstream");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web upstream");
     }
 
     return 0;
@@ -775,11 +929,41 @@ int set_ftp_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for %s", ftp_ser_sel);
             }
         }
+
         freeReplyObject(reply);
     }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart %s", ftp_ser_sel);
+    }
 
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web upstream");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for upstream");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for upstream");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web upstream");
+    }
     return 0;
 }
+
+/* serial_port_N_cfg "device_type": which acquisition process owns the port */
+#define SERPORT_DEV_DLMS 1
+#define SERPORT_DEV_MODBUS 2
 
 int set_serial_port_cfg(redisContext *ctx, cJSON *data)
 {
@@ -787,6 +971,10 @@ int set_serial_port_cfg(redisContext *ctx, cJSON *data)
     cJSON *item;
     char hash[32];
     int port = 0;
+    int device_type;
+    int parity = -1;
+    char stop_bits[8] = ""; /* "1", "1.5" or "2"; empty = not sent */
+    const char *proc_name;
 
     if (!ctx || !data)
         return -1;
@@ -797,21 +985,25 @@ int set_serial_port_cfg(redisContext *ctx, cJSON *data)
 
     sprintf(hash, "serial_port_%d_cfg", port - 1);
 
-#define UPDATE_INT(JSON_KEY, REDIS_KEY) \
-    hset_int_field(ctx, data, JSON_KEY, hash, REDIS_KEY)
+    /* ---- 1. Check everything BEFORE writing, so a failure changes nothing ---- */
+    if (!rhash_exists(ctx, hash))
+        return set_cfg_fail("SERIAL_PORT", "Redis hash %s does not exist", hash);
 
-    UPDATE_INT("BAUD_RATE", "baudrate");
-    UPDATE_INT("DATA_BITS", "databits");
-    UPDATE_INT("STOP_BITS", "stopbits");
+    /* device_type decides which process must be restarted:
+     *   1 = DLMS   -> SerDaProc_0      (port 1) / SerDaProc_1      (port 2)
+     *   2 = Modbus -> modrtu_master_0  (port 1) / modrtu_master_1  (port 2) */
+    device_type = rget_int(ctx, hash, "device_type", -1);
+    if (device_type == SERPORT_DEV_DLMS)
+        proc_name = (port == 1) ? "SerDaProc_0" : "SerDaProc_1";
+    else if (device_type == SERPORT_DEV_MODBUS)
+        proc_name = (port == 1) ? "modrtu_master_0" : "modrtu_master_1";
+    else
+        return set_cfg_fail("SERIAL_PORT", "%s device_type is %d (expected 1 = DLMS or 2 = Modbus)",
+                            hash, device_type);
 
-#undef UPDATE_INT
-
-    /* PARITY */
     item = cJSON_GetObjectItemCaseSensitive(data, "PARITY");
     if (cJSON_IsString(item) && item->valuestring)
     {
-        int parity = 0;
-
         if (!strcasecmp(item->valuestring, "none"))
             parity = 0;
         else if (!strcasecmp(item->valuestring, "odd"))
@@ -819,11 +1011,119 @@ int set_serial_port_cfg(redisContext *ctx, cJSON *data)
         else if (!strcasecmp(item->valuestring, "even"))
             parity = 2;
         else
-            return -1;
+            return set_cfg_fail("PARITY", "PARITY must be none, odd or even (got '%s')", item->valuestring);
+    }
 
+    /* STOP_BITS: "1", "1.5" or "2" (string or number). Stored as that text.
+     * It used to go through hset_int_field(), whose integer parser rejects
+     * "1.5", so 1.5 was silently never written. */
+    item = cJSON_GetObjectItemCaseSensitive(data, "STOP_BITS");
+    if (item != NULL && !cJSON_IsNull(item))
+    {
+        if (cJSON_IsNumber(item))
+        {
+            double d = item->valuedouble;
+
+            if (d == 1.0)
+                strcpy(stop_bits, "1");
+            else if (d == 1.5)
+                strcpy(stop_bits, "1.5");
+            else if (d == 2.0)
+                strcpy(stop_bits, "2");
+            else
+                return set_cfg_fail("STOP_BITS", "STOP_BITS must be 1, 1.5 or 2 (got %g)", d);
+        }
+        else if (cJSON_IsString(item) && item->valuestring)
+        {
+            const char *v = item->valuestring;
+            size_t len;
+
+            while (*v == ' ' || *v == '\t')
+                v++;
+            len = strlen(v);
+            while (len > 0 && (v[len - 1] == ' ' || v[len - 1] == '\t' ||
+                               v[len - 1] == '\r' || v[len - 1] == '\n'))
+                len--;
+
+            if (len == 1 && v[0] == '1')
+                strcpy(stop_bits, "1");
+            else if (len == 3 && !strncmp(v, "1.5", 3))
+                strcpy(stop_bits, "1.5");
+            else if (len == 1 && v[0] == '2')
+                strcpy(stop_bits, "2");
+            else
+                return set_cfg_fail("STOP_BITS", "STOP_BITS must be 1, 1.5 or 2 (got '%s')", item->valuestring);
+        }
+        else
+        {
+            return set_cfg_fail("STOP_BITS", "STOP_BITS must be 1, 1.5 or 2");
+        }
+    }
+
+    /* ---- 2. Write ---- */
+#define UPDATE_INT(JSON_KEY, REDIS_KEY) \
+    hset_int_field(ctx, data, JSON_KEY, hash, REDIS_KEY)
+
+    UPDATE_INT("BAUD_RATE", "baudrate");
+    UPDATE_INT("DATA_BITS", "databits");
+
+#undef UPDATE_INT
+
+    if (stop_bits[0])
+    {
+        reply = redisCommand(ctx, "HSET %s stopbits %s", hash, stop_bits);
+        if (reply)
+            freeReplyObject(reply);
+        LOG_INFO("Serial port %d: stopbits = %s", port, stop_bits);
+    }
+
+    if (parity >= 0)
+    {
         reply = redisCommand(ctx, "HSET %s parity %d", hash, parity);
         if (reply)
             freeReplyObject(reply);
+    }
+
+    /* ---- 3. Restart the process that uses this port ---- */
+    LOG_INFO("Serial port %d (%s) device_type=%d -> restarting %s",
+             port, hash, device_type, proc_name);
+
+    reply = redisCommand(ctx, "SADD proc_restart %s", proc_name);
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+                LOG_INFO("Restart requested for %s", proc_name);
+            else
+                LOG_INFO("Restart already pending for %s", proc_name);
+        }
+        else if (reply->type == REDIS_REPLY_ERROR)
+        {
+            LOG_ERROR("Redis SADD proc_restart %s failed: %s", proc_name, reply->str);
+        }
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart %s", proc_name);
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web device");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+                LOG_INFO("Restart requested for device");
+            else
+                LOG_INFO("Restart already pending for device");
+        }
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web device");
     }
 
     return 0;
@@ -842,7 +1142,7 @@ int set_modtcp_cfg(redisContext *ctx, cJSON *data)
 
     item = cJSON_GetObjectItemCaseSensitive(data, "METER_NAME");
     if (!cJSON_IsString(item) || item->valuestring == NULL)
-        return -1;
+        return set_cfg_fail("METER_NAME", "METER_NAME missing or not a string");
 
     strcpy(meter_name, item->valuestring);
 
@@ -866,7 +1166,7 @@ int set_modtcp_cfg(redisContext *ctx, cJSON *data)
     }
 
     if (hash[0] == '\0')
-        return -1;
+        return set_cfg_fail("METER_NAME", "Modbus TCP device '%s' not found", meter_name);
 
 #define UPDATE_STR(JSON_KEY, REDIS_KEY)                               \
     do                                                                \
@@ -891,7 +1191,7 @@ int set_modtcp_cfg(redisContext *ctx, cJSON *data)
     UPDATE_INT("SLAVE_ID", "slave_id");
     UPDATE_INT("RETRIES", "retries");
     UPDATE_INT("POLL_SKIP_COUNT", "poll_faulty_cnt");
-    UPDATE_INT("RESP_TIMEOUT", "resp_timeout");
+    hset_int_field_scaled(ctx, data, "RESP_TIMEOUT", hash, "resp_timeout", RESP_TIMEOUT_SCALE); /* s -> ms */
 
 #undef UPDATE_STR
 #undef UPDATE_INT
@@ -910,7 +1210,34 @@ int set_modtcp_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for MODTCP_PROC");
             }
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart modtcp_master");
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web meter");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for meter");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for meter");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web meter");
     }
 
     return 0;
@@ -935,7 +1262,7 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
     /* METER_NAME */
     item = cJSON_GetObjectItemCaseSensitive(data, "METER_NAME");
     if (!cJSON_IsString(item) || !item->valuestring)
-        return -1;
+        return set_cfg_fail("METER_NAME", "METER_NAME missing or not a string");
 
     strcpy(meter_name, item->valuestring);
 
@@ -959,7 +1286,7 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
     }
 
     if (hash[0] == '\0')
-        return -1;
+        return set_cfg_fail("METER_NAME", "Modbus RTU device '%s' not found on port %d", meter_name, serial_port);
 
 #define UPDATE_INT(JSON_KEY, REDIS_KEY) \
     hset_int_field(ctx, data, JSON_KEY, hash, REDIS_KEY)
@@ -967,12 +1294,12 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
     UPDATE_INT("SLAVE_ID", "slave_id");
     UPDATE_INT("RETRIES", "retries");
     UPDATE_INT("POLL_SKIP_COUNT", "poll_faulty_cnt");
-    UPDATE_INT("RESP_TIMEOUT", "resp_timeout");
+    hset_int_field_scaled(ctx, data, "RESP_TIMEOUT", hash, "resp_timeout", RESP_TIMEOUT_SCALE); /* s -> ms */
 
 #undef UPDATE_INT
 
-    const char *mod_serial = (serial_port == 1) ? "modrtu_master 0"
-                                                : "modrtu_master 1";
+    const char *mod_serial = (serial_port == 1) ? "modrtu_master_0"
+                                                : "modrtu_master_1";
 
     reply = redisCommand(ctx, "SADD proc_restart %s", mod_serial);
     if (reply)
@@ -988,7 +1315,34 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for %s", mod_serial);
             }
         }
+
         freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart %s", mod_serial);
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web meter");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for meter");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for meter");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web meter");
     }
 
     return 0;
@@ -1048,7 +1402,7 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
     /* METER_NAME */
     item = cJSON_GetObjectItemCaseSensitive(data, "METER_NAME");
     if (!cJSON_IsString(item) || !item->valuestring)
-        return -1;
+        return set_cfg_fail("METER_NAME", "METER_NAME missing or not a string");
 
     snprintf(meter_name, sizeof(meter_name), "%s", item->valuestring);
 
@@ -1066,7 +1420,7 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
     }
     else
     {
-        return -1;
+        return set_cfg_fail("METER_ADDRESS", "METER_ADDRESS missing or not a number/string");
     }
 
     char hash_name[64];
@@ -1076,7 +1430,7 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
     if (find_meter(ctx, meter_name, hash_name, &meter_id) != 0)
     {
         LOG_INFO("Meter not found");
-        return -1;
+        return set_cfg_fail("METER_NAME", "DLMS serial meter '%s' not found on port %d", meter_name, serial_port);
     }
 
     char key[64];
@@ -1088,12 +1442,12 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
     if (!reply)
     {
         LOG_ERROR("Redis HSET failed");
-        return -1;
+        return set_cfg_fail("", "Redis HSET of meter address failed");
     }
 
     freeReplyObject(reply);
 
-    const char *dlms_serial = (serial_port == 1) ? "SerDaProc 0" : "SerDaProc 1";
+    const char *dlms_serial = (serial_port == 1) ? "SerDaProc_0" : "SerDaProc_1";
     reply = redisCommand(ctx, "SADD proc_restart %s", dlms_serial);
     if (reply)
     {
@@ -1108,8 +1462,36 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for %s", dlms_serial);
             }
         }
+
         freeReplyObject(reply);
     }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart %s", dlms_serial);
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web meter");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for meter");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for meter");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web meter");
+    }
+
     return 0;
 }
 
@@ -1128,7 +1510,7 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
     /* METER_NAME */
     item = cJSON_GetObjectItemCaseSensitive(data, "METER_NAME");
     if (!cJSON_IsString(item) || !item->valuestring)
-        return -1;
+        return set_cfg_fail("METER_NAME", "METER_NAME missing or not a string");
 
     snprintf(meter_name, sizeof(meter_name), "%s", item->valuestring);
 
@@ -1141,7 +1523,7 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
     }
     else
     {
-        return -1;
+        return set_cfg_fail("IP_ADDR", "IP_ADDR missing or not a string");
     }
 
     char hash_name[64];
@@ -1151,7 +1533,7 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
     if (find_meter(ctx, meter_name, hash_name, &meter_id) != 0)
     {
         LOG_INFO("Meter not found");
-        return -1;
+        return set_cfg_fail("METER_NAME", "DLMS Ethernet meter '%s' not found", meter_name);
     }
 
     char key[64];
@@ -1163,13 +1545,13 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
     if (!reply)
     {
         LOG_ERROR("Redis HSET failed");
-        return -1;
+        return set_cfg_fail("", "Redis HSET of ip_addr failed");
     }
 
     freeReplyObject(reply);
 
     char eth_proc[64];
-    snprintf(eth_proc, sizeof(eth_proc), "ethDaProc %d", meter_id);
+    snprintf(eth_proc, sizeof(eth_proc), "ethDaProc_%d", meter_id);
 
     reply = redisCommand(ctx, "SADD proc_restart %s", eth_proc);
     if (reply)
@@ -1185,8 +1567,36 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
                 LOG_INFO("Restart already pending for %s", eth_proc);
             }
         }
+
         freeReplyObject(reply);
     }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD proc_restart %s", eth_proc);
+    }
+
+    reply = redisCommand(ctx, "SADD mqtt_config_change_web meter");
+    if (reply)
+    {
+        if (reply->type == REDIS_REPLY_INTEGER)
+        {
+            if (reply->integer == 1)
+            {
+                LOG_INFO("Restart requested for meter");
+            }
+            else
+            {
+                LOG_INFO("Restart already pending for meter");
+            }
+        }
+
+        freeReplyObject(reply);
+    }
+    else
+    {
+        LOG_ERROR("Failed to execute Redis command: SADD mqtt_config_change_web meter");
+    }
+
     return 0;
 }
 
@@ -1480,6 +1890,42 @@ static int trans_find_eth_met_id(redisContext *ctx, const char *serial, int *met
     return 0;
 }
 
+/* Ethernet transparent mode runs over the IPsec tunnel, so at least one of
+ * the two tunnels must be enabled (ipsec_0_cfg / ipsec_1_cfg enable_tunnel).
+ * enable_tunnel is written as 1/0 by set_cfg; "yes"/"true"/"enable(d)" are
+ * accepted too in case the Web UI stores text. Returns 1 if any is enabled. */
+static int trans_ipsec_value_on(const char *v)
+{
+    return v != NULL &&
+           (!strcmp(v, "1") || !strcasecmp(v, "yes") || !strcasecmp(v, "true") ||
+            !strcasecmp(v, "enable") || !strcasecmp(v, "enabled"));
+}
+
+static int trans_ipsec_enabled(redisContext *ctx)
+{
+    int i;
+
+    for (i = 0; i < 2; i++)
+    {
+        redisReply *r = redisCommand(ctx, "HGET ipsec_%d_cfg enable_tunnel", i);
+        int on = 0;
+
+        if (r)
+        {
+            if (r->type == REDIS_REPLY_STRING)
+                on = trans_ipsec_value_on(r->str);
+            else if (r->type == REDIS_REPLY_INTEGER)
+                on = (r->integer != 0);
+            LOG_INFO("trans_mode: ipsec_%d_cfg enable_tunnel=%s -> %s", i,
+                     r->type == REDIS_REPLY_STRING ? r->str : "<not set>", on ? "enabled" : "disabled");
+            freeReplyObject(r);
+        }
+        if (on)
+            return 1;
+    }
+    return 0;
+}
+
 static int trans_redis_ok(redisReply *reply, const char *what)
 {
     if (reply == NULL)
@@ -1513,6 +1959,8 @@ int trans_mode_request(redisContext *ctx, cmd_request_t *cmd)
     int dur_min = 0;
     char meter_serial[64] = "";
 
+    set_cfg_clear_error(); /* reason of a failure is reported in the reply */
+
     if (!ctx || !cmd || !cmd->data)
         return TRANS_ERR;
 
@@ -1534,15 +1982,28 @@ int trans_mode_request(redisContext *ctx, cmd_request_t *cmd)
     }
     else if (!strcasecmp(cmd->data_type_req, "ETHERNET"))
     {
+        /* START over Ethernet needs an IPsec tunnel; nothing is written if not */
+        if (start && !trans_ipsec_enabled(ctx))
+        {
+            set_cfg_fail("IPSEC", "IPsec is not enabled in both tunnels");
+            return TRANS_ERR;
+        }
         if (trans_get_meter_serial(data, meter_serial, sizeof(meter_serial)) != 0)
+        {
+            set_cfg_fail("METER", "METER missing or invalid");
             return TRANS_ERR;
+        }
         if (trans_find_eth_met_id(ctx, meter_serial, &met_id) != 0)
+        {
+            set_cfg_fail("METER", "Ethernet meter '%s' not found", meter_serial);
             return TRANS_ERR;
+        }
         port = TRANS_PORT_ETHERNET;
     }
     else if (!strcasecmp(cmd->data_type_req, "FULL"))
     {
         LOG_INFO("trans_mode: %s FULL received - not implemented yet", start ? "START" : "STOP");
+        set_cfg_fail("DATA_TYPE", "FULL transparent mode is not supported yet");
         return TRANS_NOT_SUPPORTED;
     }
     else
@@ -1600,46 +2061,109 @@ int trans_mode_request(redisContext *ctx, cmd_request_t *cmd)
     return TRANS_OK;
 }
 
-int set_cfg_export_json(redisContext *ctx, cmd_request_t *cmd)
+static int set_cfg_dispatch(redisContext *ctx, cmd_request_t *cmd)
 {
-    if (!strcmp(cmd->data_type_req, "MQTT_BROKER_mqtt1"))
+    /* DATA_TYPE names match mqtt_cmd_validate.c (case-insensitive, spec name
+     * plus the older alias), so a message that passed validation is never
+     * dropped here as an "unknown" DATA_TYPE. */
+    const char *dt = cmd->data_type_req;
+
+    if (!strcasecmp(dt, "MQTT_BROKER_1") || !strcasecmp(dt, "MQTT_BROKER_PRIMARY"))
         return set_mqtt_cfg(ctx, cmd->data, 1);
 
-    if (!strcmp(cmd->data_type_req, "MQTT_BROKER_mqtt2"))
+    if (!strcasecmp(dt, "MQTT_BROKER_2") || !strcasecmp(dt, "MQTT_BROKER_SECONDARY"))
         return set_mqtt_cfg(ctx, cmd->data, 0);
 
-    if (!strcmp(cmd->data_type_req, "MODEM"))
+    if (!strcasecmp(dt, "MODEM"))
         return set_modem_cfg(ctx, cmd->data);
 
-    if (!strcmp(cmd->data_type_req, "IPSEC"))
+    if (!strcasecmp(dt, "IPSEC"))
         return set_ipsec_cfg(ctx, cmd->data); // eNABLE is enabled
 
-    if (!strcmp(cmd->data_type_req, "MODBUS_TCP"))
+    if (!strcasecmp(dt, "MODBUS_TCP"))
         return set_modtcp_cfg(ctx, cmd->data);
 
-    if (!strcmp(cmd->data_type_req, "MODBUS_RTU"))
+    if (!strcasecmp(dt, "MODBUS_RTU"))
         return set_modrtu_cfg(ctx, cmd->data);
 
-    if (!strcmp(cmd->data_type_req, "IEC104"))
+    if (!strcasecmp(dt, "IEC104"))
         return set_iec104_cfg(ctx, cmd->data); // Enable is enabled
 
-    if (!strcmp(cmd->data_type_req, "SERPORT"))
+    if (!strcasecmp(dt, "SERPORT") || !strcasecmp(dt, "SERIAL PORT"))
         return set_serial_port_cfg(ctx, cmd->data);
 
-    if (!strcmp(cmd->data_type_req, "IEC101"))
+    if (!strcasecmp(dt, "IEC101"))
         return set_iec101_cfg(ctx, cmd->data); // Enable is enabled
 
-    if (!strcmp(cmd->data_type_req, "FTP"))
+    if (!strcasecmp(dt, "FTP"))
         return set_ftp_cfg(ctx, cmd->data); // Enable is enabled
 
-    if (!strcmp(cmd->data_type_req, "NTP"))
+    if (!strcasecmp(dt, "NTP"))
         return set_ntp_cfg(ctx, cmd->data); // Enable is enabled
 
-    if (!strcmp(cmd->data_type_req, "DLMS_SERIAL"))
+    if (!strcasecmp(dt, "DLMS_SERIAL"))
         return set_dlms_serial_cfg(ctx, cmd->data);
 
-    if (!strcmp(cmd->data_type_req, "DLMS_ETHERNET"))
+    if (!strcasecmp(dt, "DLMS_ETHERNET"))
         return set_dlms_ethernet_cfg(ctx, cmd->data);
 
-    return -1;
+    return set_cfg_fail("DATA_TYPE", "Unsupported set_cfg DATA_TYPE '%s'", dt);
+}
+
+int set_cfg_export_json(redisContext *ctx, cmd_request_t *cmd)
+{
+    int rc;
+
+    set_cfg_clear_error();
+
+    if (!ctx || !cmd || !cmd->data)
+        return set_cfg_fail("", "Internal error (no Redis context or DATA)");
+
+    rc = set_cfg_dispatch(ctx, cmd);
+
+    /* A handler that failed without naming a parameter */
+    if (rc != 0 && g_set_cfg_err_reason[0] == '\0')
+        set_cfg_fail("", "%s update failed", cmd->data_type_req);
+
+    return rc;
+}
+
+/*
+ * set_cfg_after_reply()
+ * ---------------------
+ * Called by processServerMsg() AFTER the set_cfg SUCCESS reply has been
+ * published (mqtt_send_msg() blocks until the broker confirms delivery).
+ * Restart requests that would cut this process's own MQTT link go here, so
+ * the reply is never lost when the supervisor kills re_mqtt_proc.
+ */
+static void sadd_restart(redisContext *ctx, const char *set, const char *member)
+{
+    redisReply *reply = redisCommand(ctx, "SADD %s %s", set, member);
+
+    if (!reply)
+    {
+        LOG_ERROR("Redis command failed: SADD %s %s", set, member);
+        return;
+    }
+    if (reply->type == REDIS_REPLY_INTEGER)
+        LOG_INFO("%s requested for %s", reply->integer == 1 ? "Restart" : "Restart already pending", member);
+    else if (reply->type == REDIS_REPLY_ERROR)
+        LOG_ERROR("Redis SADD %s %s failed: %s", set, member, reply->str);
+    freeReplyObject(reply);
+}
+
+void set_cfg_after_reply(redisContext *ctx, cmd_request_t *cmd)
+{
+    const char *dt;
+
+    if (!ctx || !cmd)
+        return;
+    dt = cmd->data_type_req;
+
+    if (!strcasecmp(dt, "MQTT_BROKER_1") || !strcasecmp(dt, "MQTT_BROKER_PRIMARY") ||
+        !strcasecmp(dt, "MQTT_BROKER_2") || !strcasecmp(dt, "MQTT_BROKER_SECONDARY"))
+    {
+        sadd_restart(ctx, "proc_restart", "re_mqtt_proc");
+        sadd_restart(ctx, "mqtt_config_change_web", "upstream");
+    }
 }

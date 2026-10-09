@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "../include/general.h"
+#include "../include/mqtt_cmd_validate.h"
 #include <pthread.h>
 #include <time.h>
 // #include "logger.h"
@@ -3985,6 +3986,124 @@ int parse_getday_cmd(cmd_request_t cmd, mqtt_conn_t *conn)
     return 0;
 }
 
+/* ==========================================================================
+ * Command parameter validation (mqtt_cmd_validate.c)
+ * --------------------------------------------------------------------------
+ * Runs for set_cfg, Reset, START_TRANS_MODE and STOP_TRANS_MODE after the
+ * ACK and the DCU serial check, before anything is written. On failure the
+ * reply is sent here and the caller must stop processing the command:
+ *   8 Invalid parameter        - missing / unknown / duplicate key
+ *   9 Invalid parameter value  - wrong type, format or out of range
+ * ========================================================================== */
+
+/* Provided by cmd_resp.c (move these prototypes into general.h) */
+int invalid_param_resp_msg(cmd_request_t cmd, const char *param, const char *reason, char *out_buf);
+int invalid_param_value_resp_msg(cmd_request_t cmd, const char *param, const char *reason, char *out_buf);
+int failure_resp_msg_detail(cmd_request_t cmd, const char *param, const char *reason, char *out_buf);
+/* Provided by set_cfg_request.c (move into get_set_cfg.h / general.h) */
+void set_cfg_after_reply(redisContext *ctx, cmd_request_t *cmd);
+const char *set_cfg_last_error_param(void);
+const char *set_cfg_last_error_reason(void);
+
+static int val_redis_hget_long(const char *hash, const char *field, long *out)
+{
+    redisReply *r = redisCommand(ctx, "HGET %s %s", hash, field);
+    int found = 0;
+
+    if (r)
+    {
+        if (r->type == REDIS_REPLY_STRING && r->str)
+        {
+            char *end;
+            long v = strtol(r->str, &end, 10);
+            if (end != r->str)
+            {
+                *out = v;
+                found = 1;
+            }
+        }
+        else if (r->type == REDIS_REPLY_INTEGER)
+        {
+            *out = (long)r->integer;
+            found = 1;
+        }
+        freeReplyObject(r);
+    }
+    return found;
+}
+
+/* Current IEC104/101 settings: the ASDU/IOA limits and the "offsets 1000
+ * apart" rule depend on them. A field missing in Redis keeps the default
+ * from mqtt_val_ctx_init(). */
+static void val_load_iec_cfg(const char *hash, const char *enable_field, mqtt_val_iec_cfg_t *c)
+{
+    long v;
+
+    if (val_redis_hget_long(hash, enable_field, &v))
+        c->enable = (v != 0);
+    /* TODO: confirm the Redis field names of the ASDU / IOA address sizes */
+    if (val_redis_hget_long(hash, "asdu_addr_size", &v) && (v == 1 || v == 2))
+        c->asdu_addr_size = (int)v;
+    if (val_redis_hget_long(hash, "ioa_addr_size", &v) && v >= 1 && v <= 3)
+        c->ioa_addr_size = (int)v;
+    if (val_redis_hget_long(hash, "ioa_offset", &v))
+        c->ioa_offset = v;
+    if (val_redis_hget_long(hash, "ioa_offset_modbus", &v))
+        c->ioa_offset_modbus = v;
+    if (val_redis_hget_long(hash, "ioa_offset_command", &v))
+        c->ioa_offset_command = v;
+}
+
+/* Returns 0 if the command may be processed, -1 if a reply was already sent. */
+static int validate_cmd_params(mqtt_conn_t *conn, cmd_request_t *cmd, char *output_msg)
+{
+    mqtt_val_ctx_t vctx;
+    mqtt_val_result_t vres;
+    int msg_size;
+    int st;
+
+    mqtt_val_ctx_init(&vctx);
+    /* DCU serial is already checked by the caller (CMD_STATUS 5), so not here */
+    vctx.dcu_serial = NULL;
+    val_load_iec_cfg("iec104_0_cfg", "enable_104", &vctx.iec104);
+    val_load_iec_cfg("iec101_0_cfg", "enable_101", &vctx.iec101);
+
+    if (!strcmp(cmd->type, "set_cfg"))
+        st = mqtt_validate_set_cfg(cmd->data_type_req, cmd->data, &vctx, &vres);
+    else
+        st = mqtt_validate_general_cmd(cmd->type,
+                                       cmd->data_type_req[0] ? cmd->data_type_req : NULL,
+                                       cmd->data, &vctx, &vres);
+
+    if (st == MQTT_CMD_ST_SUCCESS || st == MQTT_CMD_NOT_VALIDATED)
+        return 0;
+
+    LOG_ERROR("[VALIDATE] %s %s rejected: CMD_STATUS=%d field=%s reason=%s",
+              cmd->type, cmd->data_type_req, st, vres.field, vres.msg);
+
+    switch (st)
+    {
+    case MQTT_CMD_ST_INVALID_PARAM:
+        msg_size = invalid_param_resp_msg(*cmd, vres.field, vres.msg, output_msg);
+        break;
+    case MQTT_CMD_ST_INVALID_VALUE:
+        msg_size = invalid_param_value_resp_msg(*cmd, vres.field, vres.msg, output_msg);
+        break;
+    case MQTT_CMD_ST_INVALID_METER:
+        msg_size = invalid_metsn_resp_msg(*cmd, output_msg);
+        break;
+    case MQTT_CMD_ST_UNKNOWN_REQUEST:
+        msg_size = unknown_req_resp_msg(*cmd, output_msg);
+        break;
+    default:
+        msg_size = failure_resp_msg(*cmd, output_msg);
+        break;
+    }
+
+    mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+    return -1;
+}
+
 int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
 {
     int i;
@@ -4280,16 +4399,34 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
             return 0;
         }
 
+        /* Parameter validation: replies 8 / 9 and stops here on failure */
+        if (validate_cmd_params(conn, &cmd, output_msg) != 0)
+        {
+            if (cmd.root)
+            {
+                cJSON_Delete(cmd.root);
+                cmd.root = NULL;
+                cmd.data = NULL;
+            }
+            return 0;
+        }
+
         if (set_cfg_export_json(ctx, &cmd) == 0)
         {
             LOG_INFO("Configuration updated successfully");
             msg_size = success_resp_msg_set_cfg(cmd, output_msg);
+            /* Blocks until the broker confirms the publish (mqtt_publish_blocking) */
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+
+            /* Only now request restarts that drop the MQTT link (MQTT_BROKER_1/2) */
+            set_cfg_after_reply(ctx, &cmd);
         }
         else
         {
-            LOG_ERROR("Configuration update failed");
-            msg_size = failure_resp_msg(cmd, output_msg);
+            LOG_ERROR("Configuration update failed: param=%s reason=%s",
+                      set_cfg_last_error_param(), set_cfg_last_error_reason());
+            msg_size = failure_resp_msg_detail(cmd, set_cfg_last_error_param(),
+                                               set_cfg_last_error_reason(), output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
         if (cmd.root)
@@ -4315,7 +4452,8 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
             msg_size = unknown_ser_num(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
-        else
+        /* Parameter validation: replies 8 / 9 itself on failure */
+        else if (validate_cmd_params(conn, &cmd, output_msg) == 0)
         {
             rc = trans_mode_request(ctx, &cmd);
 
@@ -4326,9 +4464,11 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
             }
             else
             {
-                LOG_ERROR("[TRANS] %s %s rejected (rc=%d%s)", cmd.type, cmd.data_type_req, rc,
-                          rc == -2 ? ", FULL not supported yet" : "");
-                msg_size = failure_resp_msg(cmd, output_msg);
+                LOG_ERROR("[TRANS] %s %s rejected (rc=%d) param=%s reason=%s", cmd.type,
+                          cmd.data_type_req, rc, set_cfg_last_error_param(), set_cfg_last_error_reason());
+                /* FAILED with PARAM / REASON, e.g. "IPsec is not enabled in both tunnels" */
+                msg_size = failure_resp_msg_detail(cmd, set_cfg_last_error_param(),
+                                                   set_cfg_last_error_reason(), output_msg);
             }
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
@@ -4350,6 +4490,18 @@ int processServerMsg(mqtt_conn_t *conn, const char *msg, int broker)
         {
             msg_size = unknown_ser_num(cmd, output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
+            return 0;
+        }
+
+        /* Parameter validation: replies 8 / 9 and does NOT reboot on failure */
+        if (validate_cmd_params(conn, &cmd, output_msg) != 0)
+        {
+            if (cmd.root)
+            {
+                cJSON_Delete(cmd.root);
+                cmd.root = NULL;
+                cmd.data = NULL;
+            }
             return 0;
         }
         printf("Before sending success message...\n");

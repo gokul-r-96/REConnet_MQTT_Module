@@ -567,6 +567,12 @@ char *export_iec104_cfg(redisContext *ctx, cmd_request_t *cmd)
     ADD_STR("master_1_ip", "MASTER_1_IP");
     ADD_BOOL("master_1_enabled", "MASTER_1_ENABLED");
 
+    ADD_STR("master_2_ip", "MASTER_2_IP");
+    ADD_BOOL("master_2_enabled", "MASTER_2_ENABLED");
+
+    ADD_STR("master_3_ip", "MASTER_3_IP");
+    ADD_BOOL("master_3_enabled", "MASTER_3_ENABLED");
+
     ADD_BOOL("enable_tls", "ENABLE_TLS");
 
     ADD_STR("ca_certificate", "CA_CERTIFICATE");
@@ -700,6 +706,12 @@ char *export_iec101_cfg(redisContext *ctx, cmd_request_t *cmd)
 
     ADD_STR("master_1_ip", "MASTER_1_IP");
     ADD_BOOL("master_1_enabled", "MASTER_1_ENABLED");
+
+    ADD_STR("master_2_ip", "MASTER_2_IP");
+    ADD_BOOL("master_2_enabled", "MASTER_2_ENABLED");
+
+    ADD_STR("master_3_ip", "MASTER_3_IP");
+    ADD_BOOL("master_3_enabled", "MASTER_3_ENABLED");
 
     ADD_BOOL("enable_tls", "ENABLE_TLS");
 

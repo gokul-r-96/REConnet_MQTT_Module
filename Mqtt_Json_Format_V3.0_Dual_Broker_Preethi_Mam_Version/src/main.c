@@ -1,0 +1,1840 @@
+#include <stdint.h> /* DR-32 */
+#include <unistd.h>
+#include <pthread.h>
+#include "../include/general.h"
+#include <pthread.h>
+// #include "logger.h"
+
+/* Provided by mqtt_connect.c (move these prototypes into general.h) */
+void mqtt_conn_manager_poll(void);
+void mqtt_conn_manager_shutdown(void);
+int mqtt_is_ready(mqtt_conn_t *conn);
+const char *mqtt_broker_state_str(mqtt_conn_t *conn);
+int mqtt_cmd_dequeue(char *out, size_t out_len, int *broker);
+
+/* Global static instances */
+mqtt_conn_t mqtt1;
+mqtt_conn_t mqtt2;
+mqtt_conn_t *current_active = NULL;
+redisContext *ctx;
+
+int seq_num;
+
+#define PRI_BROKER_RECONNECT_PERIOD 60
+#define NW_LOGGER_CHECK 30
+
+char meter_serials[MAX_METERS][32];
+int meter_count = 0;
+int certificate_path_check_mqtt1 = 0;
+int certificate_path_check_mqtt2 = 0;
+volatile sig_atomic_t stop_flag = 1;
+// rithika 02April2026
+/* defined in mqtt_connect.c (a second definition breaks linking with gcc >= 10 / -fno-common) */
+extern time_t mqtt1_mqtt_conn_time;
+extern time_t secn_mqtt_conn_time;
+int cur_active_mqtt = -1;
+char dcu_ser_num[SIZE_32];
+
+char mqtt1_status_hash[32];
+char mqtt2_status_hash[32];
+
+// Gokul added the variables for the mqtt cloud status led updation --> 04/09/2026
+
+#define MQTT_LED_GPIO 87
+volatile int mqtt_led_connected = 0;
+
+extern int check_redis_resp;
+extern time_t check_redis_resp_since;
+#define FETCHDAY_TIMEOUT_SEC 600 /* F7: give up waiting for the DLMS poller */
+void fetchday_reset_state(void);
+/*Gokul added the below variables for mqtt connecting --> 02/05/2026 */
+int mqtt1_connecting = 0;
+int mqtt2_connecting = 0;
+
+time_t last_mqtt1_try = 0;
+time_t last_mqtt2_try = 0;
+
+time_t last_publish_inst = 0;
+time_t last_publish_profile = 0;
+time_t last_publish_hc = 0;
+time_t last_publish_modbus = 0;
+
+extern time_t mqtt1_connect_start;
+extern time_t mqtt2_connect_start;
+
+#define mqtt1_RETRY_SEC 60
+#define mqtt2_RETRY_SEC 60
+
+time_t last_mqtt1_inst = 0;
+time_t last_mqtt1_profile = 0;
+time_t last_mqtt1_hc = 0;
+time_t last_mqtt1_modbus = 0;
+
+time_t last_mqtt2_inst = 0;
+time_t last_mqtt2_profile = 0;
+time_t last_mqtt2_hc = 0;
+time_t last_mqtt2_modbus = 0;
+
+extern volatile int mqtt_cmd_broker;
+
+extern volatile int mqtt_status_update_req;
+extern char mqtt_status_value[16];
+
+extern volatile int mqtt_time_update_req;
+extern char mqtt_time_uptime[64];
+extern char mqtt_time_lastmsg[32];
+extern int mqtt_time_active;
+extern int mqtt_time_update_last;
+
+extern int mqtt1_need_destroy;
+extern int mqtt2_need_destroy;
+
+extern time_t mqtt1_destroy_time;
+extern time_t mqtt2_destroy_time;
+
+extern pthread_mutex_t mqtt_api_mutex;
+
+extern time_t mqtt1_lost_time;
+extern time_t mqtt2_lost_time;
+
+extern char mqtt_cmd_buffer[4096];
+extern volatile int mqtt_cmd_recv;
+extern pthread_mutex_t cmd_mutex;
+
+extern int Fetchday_cmd_broker;
+
+/**
+ * mqtt_module_start()
+ * -------------------
+ * Initializes and starts MQTT subsystem.
+ */
+
+// static inline time_t monotonic_sec(void)
+// {
+//     struct timespec ts;
+
+//     clock_gettime(CLOCK_MONOTONIC, &ts);
+
+//     return ts.tv_sec;
+// }
+
+void mqtt_trace_callback(enum MQTTASYNC_TRACE_LEVELS level, char *message)
+{
+    LOG_INFO("[PAHO TRACE] %s", message);
+}
+
+/*Function to get redis string*/
+void redis_get_str(redisContext *c, const char *hash, const char *key, char *out, size_t len)
+{
+    redisReply *r = redisCommand(c, "HGET %s %s", hash, key);
+    if (r && r->type == REDIS_REPLY_STRING)
+    {
+        strncpy(out, r->str, len - 1);
+        out[len - 1] = '\0';
+    }
+    freeReplyObject(r);
+}
+
+/**
+ * Helper: read integer from Redis hash
+ */
+int redis_get_int(redisContext *c, const char *hash, const char *key)
+{
+    redisReply *r = redisCommand(c, "HGET %s %s", hash, key);
+    int val = (r && r->type == REDIS_REPLY_STRING) ? atoi(r->str) : 0;
+    freeReplyObject(r);
+    return val;
+}
+
+void load_active_meters(redisContext *ctx)
+{
+    redisReply *reply;
+
+    reply = redisCommand(ctx, "HGETALL meter_commn_status");
+
+    if (!reply || reply->type != REDIS_REPLY_ARRAY)
+    {
+        if (reply)
+            freeReplyObject(reply); /* DR-30: leaked every 3 s on a Redis error */
+        return;
+    }
+
+    meter_count = 0;
+
+    for (int i = 0; i < reply->elements; i += 2)
+    {
+        char *field = reply->element[i]->str;
+        char *value = reply->element[i + 1]->str;
+
+        /* Skip _time fields */
+        if (strstr(field, "_time"))
+            continue;
+
+        /* Only communicating meters */
+        if (strcmp(value, "Communicating") != 0)
+            continue;
+
+        /* Extract serial number */
+        char *serial = strrchr(field, '_');
+        if (!serial)
+            continue;
+
+        serial++; // skip '_'
+
+        strncpy(meter_serials[meter_count], serial, 31);
+        meter_serials[meter_count][31] = '\0';
+
+        meter_count++;
+
+        if (meter_count >= MAX_METERS)
+            break;
+    }
+
+    freeReplyObject(reply);
+
+    printf("Active meters: %d\n", meter_count);
+}
+
+int get_active_broker()
+{
+    if (current_active == &mqtt1 && mqtt1.connected)
+        return 0; // mqtt1
+
+    if (current_active == &mqtt2 && mqtt2.connected)
+        return 1; // mqtt2
+
+    return -1; // NONE
+}
+
+static void mqtt_led_set(int value)
+{
+    FILE *fp = fopen("/sys/class/gpio/gpio87/value", "w");
+    if (!fp)
+        return;
+
+    fprintf(fp, "%d", value);
+    fclose(fp);
+}
+
+static int mqtt_led_init(void)
+{
+    FILE *fp;
+
+    if (access("/sys/class/gpio/gpio87", F_OK) != 0)
+    {
+        fp = fopen("/sys/class/gpio/export", "w");
+        if (!fp)
+            return -1;
+
+        fprintf(fp, "%d", MQTT_LED_GPIO);
+        fclose(fp);
+        usleep(100000);
+    }
+
+    fp = fopen("/sys/class/gpio/gpio87/direction", "w");
+    if (!fp)
+        return -1;
+
+    fprintf(fp, "out");
+    fclose(fp);
+
+    mqtt_led_set(0);
+    return 0;
+}
+
+// void *mqtt_worker_thread(void *arg)
+// {
+//     char file_rem_cmd[128];
+//     time_t last_mqtt1_retry = 0;
+
+//     // rithika 16April2026
+//     time_t last_nw_logger_check = 0;
+//     int inst_data_interval = 0;
+//     int profile_data_interval = 0;
+//     int modbus_data_interval = 0;
+//     int health_check_data_interval = 0;
+//     int interval_sec;
+//     int elapsed;
+//     int remaining;
+//     while (stop_flag)
+//     {
+//         send_hc_msg();
+//         // time_t now = time(NULL);
+//         time_t now = monotonic_sec();
+
+//         if (mqtt1_connecting && mqtt1_connect_start > 0 && (now - mqtt1_connect_start >= MQTT_CONNECT_TIMEOUT))
+//         {
+//             LOG_ERROR("[WATCHDOG] mqtt1 connection timeout");
+//             mqtt1_connecting = 0;
+//             mqtt1_connect_start = 0;
+//             if (mqtt1.client)
+//             {
+//                 mqtt1_need_destroy = 1;
+//                 mqtt1_destroy_time = now;
+//             }
+//         }
+
+//         if (mqtt2_connecting && mqtt2_connect_start > 0 && (now - mqtt2_connect_start >= MQTT_CONNECT_TIMEOUT))
+//         {
+//             LOG_ERROR("[WATCHDOG] mqtt2 connection timeout");
+//             mqtt2_connecting = 0;
+//             mqtt2_connect_start = 0;
+//             if (mqtt2.client)
+//             {
+//                 mqtt2_need_destroy = 1;
+//                 mqtt2_destroy_time = now;
+//             }
+//         }
+
+//         // rithika 16April2026
+//         if ((now - last_nw_logger_check) >= NW_LOGGER_CHECK)
+//         {
+//             last_nw_logger_check = now;
+//             iec104_log_sink_poll_network();
+//             send_hc_msg();
+//         }
+//         /* ------------------------------------------------ */
+//         /* MQTT FAILOVER + FAILBACK LOGIC                   */
+//         /* ------------------------------------------------ */
+
+//         bool mqtt1_up = mqtt1.connected;
+//         bool mqtt2_up = mqtt2.connected;
+
+//         /* ---------- mqtt1 ACTIVE ---------- */
+//         /* Gokul changed the mqtt1 and mqtt2 connections setup due to some failure cases --> 21/05/2026 */
+//         if (mqtt1_up)
+//         {
+//             mqtt1.connected = true;
+//             mqtt2.connected = mqtt2_up;
+
+//             current_active = &mqtt1;
+
+//             cur_active_mqtt =
+//                 (certificate_path_check_mqtt1 == 0) ? 1 : 2;
+
+//             /* No need mqtt2 when mqtt1 alive */
+//             if (mqtt2_up)
+//             {
+//                 LOG_INFO("[SWITCHOVER] Disconnect mqtt2");
+
+//                 // MQTTAsync_disconnect(mqtt2.client, NULL);
+//                 pthread_mutex_lock(&mqtt_api_mutex);
+//                 MQTTAsync_disconnect(mqtt2.client, NULL);
+//                 pthread_mutex_unlock(&mqtt_api_mutex);
+
+//                 mqtt2.connected = false;
+//             }
+//         }
+
+//         /* ---------- mqtt2 ACTIVE ---------- */
+//         else if (mqtt2_up)
+//         {
+//             mqtt2.connected = true;
+//             mqtt1.connected = false;
+
+//             current_active = &mqtt2;
+
+//             cur_active_mqtt =
+//                 (certificate_path_check_mqtt2 == 0) ? 1 : 2;
+
+//             // /* Retry mqtt1 periodically */
+//             // if ((now - last_mqtt1_retry) >= PRI_BROKER_RECONNECT_PERIOD)
+//             // {
+//             //     last_mqtt1_retry = now;
+
+//             //     LOG_INFO("[FAILBACK] Checking mqtt1 broker");
+
+//             //     /* clear stale connecting state */
+//             //     if (mqtt1_connecting)
+//             //     {
+//             //         if (!mqtt1.connected)
+//             //         {
+//             //             LOG_INFO("[FAILBACK] Clearing stale mqtt1 state");
+
+//             //             mqtt1_connecting = 0;
+
+//             //             if (mqtt1.client)
+//             //             {
+//             //                 mqtt1_need_destroy = 1;
+//             //                 // mqtt1_destroy_time = time(NULL);
+//             //                 mqtt1_destroy_time = monotonic_sec();
+//             //             }
+//             //         }
+//             //     }
+
+//             //     /* retry mqtt1 */
+//             //     if (!mqtt1_connecting &&
+//             //         mqtt1.cfg.enable_mqtt)
+//             //     {
+//             //         LOG_INFO("[FAILBACK] Trying mqtt1 broker");
+
+//             //         mqtt1_connecting = 1;
+
+//             //         mqtt_connect(&mqtt1);
+//             //     }
+//             // }
+//         }
+
+//         // /* ---------- NO BROKER CONNECTED ---------- */
+//         // else
+//         // {
+//         //     mqtt1.connected = false;
+//         //     mqtt2.connected = false;
+
+//         //     current_active = NULL;
+//         //     cur_active_mqtt = -1;
+
+//         //     /* Try mqtt1 */
+//         //     if (mqtt1.cfg.enable_mqtt)
+//         //     {
+//         //         if ((!mqtt1.connected && !mqtt1_connecting) &&
+//         //             (now - last_mqtt1_try >= mqtt1_RETRY_SEC))
+//         //         {
+//         //             LOG_INFO("[RECONNECT] Trying mqtt1");
+
+//         //             mqtt1_connecting = 1;
+//         //             last_mqtt1_try = now;
+
+//         //             mqtt_connect(&mqtt1);
+//         //         }
+//         //     }
+
+//         //     /* Try mqtt2 */
+//         //     if (mqtt2.cfg.enable_mqtt)
+//         //     {
+//         //         if ((!mqtt2.connected && !mqtt2_connecting) &&
+//         //             (now - last_mqtt2_try >= mqtt2_RETRY_SEC))
+//         //         {
+//         //             /* wait before switching to mqtt2 */
+//         //             if ((now - mqtt1_lost_time) >= 10)
+//         //             {
+//         //                 LOG_INFO("[FAILOVER] Trying mqtt2");
+
+//         //                 mqtt2_connecting = 1;
+//         //                 last_mqtt2_try = now;
+
+//         //                 mqtt_connect(&mqtt2);
+//         //             }
+//         //             else
+//         //             {
+//         //                 LOG_INFO("[FAILOVER] Waiting before mqtt2 retry...");
+//         //             }
+//         //         }
+//         //     }
+//         // }
+//         /* ---------- NO BROKER CONNECTED ---------- */
+//         else
+//         {
+//             mqtt1.connected = false;
+//             mqtt2.connected = false;
+
+//             current_active = NULL;
+//             cur_active_mqtt = -1;
+
+//             printf("mqtt1 Connected = %d\n", mqtt1.connected);
+//             printf("mqtt1 Connecting = %d\n", mqtt1_connecting);
+//             printf("mqtt2 Connected = %d\n", mqtt2.connected);
+//             printf("mqtt2 Connecting = %d\n", mqtt2_connecting);
+
+//             /*
+//             * mqtt1
+//             */
+//             if (mqtt1.cfg.enable_mqtt &&!mqtt1_connecting &&!mqtt2_connecting && (now - last_mqtt1_try >= mqtt1_RETRY_SEC))
+//             {
+//                 LOG_INFO("[RECONNECT] Trying mqtt1");
+
+//                 mqtt1_connecting = 1;
+//                 mqtt1_connect_start = now;
+//                 last_mqtt1_try = now;
+//                 int rc = mqtt_connect(&mqtt1);
+//                 if (rc != MQTTASYNC_SUCCESS)
+//                 {
+//                     LOG_ERROR("[MQTT] mqtt1 connect start failed, rc=%d", rc);
+//                     mqtt1_connecting = 0;
+//                     mqtt1_connect_start = 0;
+//                     mqtt1_need_destroy = 1;
+//                     mqtt1_destroy_time = now;
+//                 }
+//             }
+
+//             /*
+//             * mqtt2
+//             *
+//             * Only try if mqtt1 is NOT connecting.
+//             */
+//             if (!mqtt1_connecting && !mqtt2_connecting && mqtt2.cfg.enable_mqtt && (now - last_mqtt2_try >= mqtt2_RETRY_SEC))
+//             {
+//                 LOG_INFO("[FAILOVER] Trying mqtt2");
+//                 mqtt2_connecting = 1;
+//                 mqtt2_connect_start = now;
+//                 last_mqtt2_try = now;
+//                 int rc = mqtt_connect(&mqtt2);
+//                 if (rc != MQTTASYNC_SUCCESS)
+//                 {
+//                     LOG_ERROR("[MQTT] mqtt2 connect start failed, rc=%d", rc);
+//                     mqtt2_connecting = 0;
+//                     mqtt2_connect_start = 0;
+//                     mqtt2_need_destroy = 1;
+//                     mqtt2_destroy_time = now;
+//                 }
+//             }
+//         }
+
+//         if (mqtt1_need_destroy)
+//         {
+//             // if ((time(NULL) - mqtt1_destroy_time) >= 2)
+//             if ((monotonic_sec() - mqtt1_destroy_time) >= 2)
+//             {
+//                 if (mqtt1.client)
+//                 {
+//                     LOG_INFO("[mqtt1] Destroying old client");
+
+//                     // MQTTAsync_destroy(&mqtt1.client);
+//                     pthread_mutex_lock(&mqtt_api_mutex);
+//                     MQTTAsync_destroy(&mqtt1.client);
+//                     pthread_mutex_unlock(&mqtt_api_mutex);
+//                     mqtt1.client = NULL;
+//                 }
+
+//                 mqtt1_need_destroy = 0;
+//                 mqtt1_destroy_time = 0;
+//             }
+//         }
+//         if (mqtt2_need_destroy)
+//         {
+//             // if ((time(NULL) - mqtt2_destroy_time) >= 2)
+//             if ((monotonic_sec() - mqtt2_destroy_time) >= 2)
+//             {
+//                 if (mqtt2.client)
+//                 {
+//                     LOG_INFO("[mqtt2] Destroying old client");
+//                     pthread_mutex_lock(&mqtt_api_mutex);
+//                     MQTTAsync_destroy(&mqtt2.client);
+//                     pthread_mutex_unlock(&mqtt_api_mutex);
+//                     mqtt2.client = NULL;
+//                 }
+
+//                 mqtt2_need_destroy = 0;
+//                 mqtt2_destroy_time = 0;
+//             }
+//         }
+//         // ///////////////////////////
+
+//         printf("check_redis_resp %d\n\n", check_redis_resp);
+
+//         if (check_redis_resp == 1 && current_active && current_active->connected)
+//         {
+//             read_redis_resp(current_active);
+//         }
+//         /* Publish */
+//         if (current_active && current_active->connected && current_active->client && (now - last_publish_inst >= current_active->cfg.dlms_inst_pub_interval * 60))
+//         {
+//             mqtt_conn_t *publish_conn = current_active;
+//             last_publish_inst = now;
+//             load_active_meters(ctx);
+//             for (int i = 0; i < meter_count; i++)
+//             {
+//                 const char *serial = meter_serials[i];
+//                 cdf_result_t res = generate_instantaneous_json(ctx, serial);
+//                 if (res.status == 0)
+//                 {
+//                     if (publish_conn->connected && publish_conn->client)
+//                     {
+//                         mqtt_send_file(publish_conn,res.filename,INST_DATA_TOPIC);
+//                     }
+//                     else
+//                     {
+//                         LOG_INFO("[MQTT] Instantaneous publish skipped - broker disconnected");
+//                     }
+//                     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+//                     sprintf(file_rem_cmd, "rm %s", res.filename);
+//                     system(file_rem_cmd);
+//                     LOG_INFO("%s is deleted successfully", res.filename);
+//                 }
+//             }
+//         }
+
+//         if (check_redis_resp == 1 && current_active && current_active->connected)
+//         {
+//             read_redis_resp(current_active);
+//         }
+
+//         /* Meter Profile */
+//         if (current_active && current_active->connected && current_active->client && (now - last_publish_profile >=
+//             current_active->cfg.dlms_data_pub_interval * 60))
+//         {
+//             mqtt_conn_t *publish_conn = current_active;
+//             last_publish_profile = now;
+//             time_t t = time(NULL);
+//             struct tm *tm_det = localtime(&t);
+//             char today_date[16];
+//             strftime(today_date, sizeof(today_date),"%Y-%m-%d", tm_det);
+//             struct timespec start, mid_start , end,mid_end,dead_end, top_start,top_end;
+//             clock_gettime(CLOCK_MONOTONIC, &top_start);
+//             for (int i = 0; i < meter_count; i++)
+//             {
+
+//                 clock_gettime(CLOCK_MONOTONIC, &start);
+//                 const char *serial = meter_serials[i];
+//                 cdf_result_t res = generate_profile_json(ctx, serial,today_date, "all");
+//                 clock_gettime(CLOCK_MONOTONIC, &end);
+//                 long elapsed_ms =
+//                     (end.tv_sec - start.tv_sec) * 1000L +
+//                     (end.tv_nsec - start.tv_nsec) / 1000000L;
+
+//                 LOG_INFO("Meter %s - Time taken for file generation alone : %ld ms (%.3f seconds)",
+//                         serial, elapsed_ms, elapsed_ms / 1000.0);
+//                 if (res.status == 0)
+//                 {
+//                     LOG_INFO("Meter Profile Generated Successfully: %s",res.filename);
+//                     clock_gettime(CLOCK_MONOTONIC, &mid_start);
+//                     if (publish_conn->connected && publish_conn->client)
+//                     {
+//                         mqtt_send_file(publish_conn,res.filename,METER_DATA_TOPIC);
+//                     }
+//                     else
+//                     {
+//                         LOG_INFO("[MQTT] Profile publish skipped - broker disconnected");
+//                     }
+
+//                     memset(file_rem_cmd, 0, sizeof(file_rem_cmd));
+//                     sprintf(file_rem_cmd, "rm %s", res.filename);
+//                     system(file_rem_cmd);
+//                     LOG_INFO("%s is deleted successfully", res.filename);
+//                     clock_gettime(CLOCK_MONOTONIC, &dead_end);
+//                     long elapsed_ms_pub =
+//                             (dead_end.tv_sec - mid_start.tv_sec) * 1000L +
+//                             (dead_end.tv_nsec - mid_start.tv_nsec) / 1000000L;
+
+//                     LOG_INFO("Meter %s - Time taken after publishing and deletion: %ld ms (%.3f seconds)",serial, elapsed_ms_pub, elapsed_ms_pub / 1000.0);
+//                 }
+//             }
+//             clock_gettime(CLOCK_MONOTONIC, &top_end);
+//             long elapsed_ms =
+//                 (top_end.tv_sec - top_start.tv_sec) * 1000L +
+//                 (top_end.tv_nsec - top_start.tv_nsec) / 1000000L;
+
+//             LOG_INFO("Time taken for entire file generation for all the meters completion : %ld ms (%.3f seconds)",elapsed_ms, elapsed_ms / 1000.0);
+//         }
+
+//         if (check_redis_resp == 1 && current_active && current_active->connected)
+//         {
+//             read_redis_resp(current_active);
+//         }
+
+//         /* Health Check */
+//         if (current_active && current_active->connected && current_active->client && (monotonic_sec() - last_publish_hc >=
+//             current_active->cfg.hc_pub_interval * 60))
+//         {
+//             mqtt_conn_t *publish_conn = current_active;
+//             load_active_meters(ctx);
+//             last_publish_hc = monotonic_sec();
+//             char xml_buf[PAYLOAD_BUFFER_SIZE];
+//             int file_Size;
+//             build_health_status_json(ctx,xml_buf,sizeof(xml_buf),&file_Size);
+
+//             if (publish_conn->connected && publish_conn->client)
+//             {
+//                 mqtt_send_msg(publish_conn,xml_buf,file_Size,HEALTH_DATA_TOPIC);
+//             }
+//             else
+//             {
+//                 LOG_INFO("[MQTT] Health check publish skipped - broker disconnected");
+//             }
+//         }
+
+//         if (check_redis_resp == 1 && current_active && current_active->connected)
+//         {
+//             read_redis_resp(current_active);
+//         }
+
+//         /* Modbus */
+//         if (current_active && current_active->connected && current_active->client && (now - last_publish_modbus >=
+//             current_active->cfg.modbus_data_pub_interval * 60))
+//         {
+//             mqtt_conn_t *publish_conn = current_active;
+//             last_publish_modbus = now;
+//             char *json = modbus_export_json(ctx, 2);
+//             if (json)
+//             {
+//                 printf("%s\n", json);
+//                 LOG_INFO("Modbus JSON generated");
+//                 if (publish_conn->connected && publish_conn->client)
+//                 {
+//                     mqtt_send_msg(publish_conn,json,strlen(json),MODBUS_DATA_TOPIC);
+//                 }
+//                 else
+//                 {
+//                     LOG_INFO("[MQTT] Modbus publish skipped - broker disconnected");
+//                 }
+
+//                 free(json); /* VERY IMPORTANT */
+//             }
+//             else
+//             {
+//                 LOG_ERROR("Failed to generate Modbus JSON");
+//             }
+//         }
+
+//         if (current_active)
+//         {
+//             int interval_sec, elapsed, remaining;
+//             int hours, minutes, seconds;
+
+//             LOG_INFO("+----------------------------------------------------------+");
+//             LOG_INFO("|                 MQTT PUBLISH STATUS                      |");
+//             LOG_INFO("+----------------------------------------------------------+");
+
+//             interval_sec = current_active->cfg.modbus_data_pub_interval * 60;
+//             elapsed = now - last_publish_modbus;
+//             remaining = interval_sec - elapsed;
+//             if (remaining > 0)
+//             {
+//                 hours = remaining / 3600;
+//                 minutes = (remaining % 3600) / 60;
+//                 seconds = remaining % 60;
+//                 LOG_INFO("| Modbus Data   : %02d hr %02d min %02d sec                 |",
+//                         hours, minutes, seconds);
+//             }
+
+//             interval_sec = current_active->cfg.hc_pub_interval * 60;
+//             elapsed = now - last_publish_hc;
+//             remaining = interval_sec - elapsed;
+//             if (remaining > 0)
+//             {
+//                 hours = remaining / 3600;
+//                 minutes = (remaining % 3600) / 60;
+//                 seconds = remaining % 60;
+//                 LOG_INFO("| Health Check  : %02d hr %02d min %02d sec                 |",
+//                         hours, minutes, seconds);
+//             }
+
+//             interval_sec = current_active->cfg.dlms_data_pub_interval * 60;
+//             elapsed = now - last_publish_profile;
+//             remaining = interval_sec - elapsed;
+//             if (remaining > 0)
+//             {
+//                 hours = remaining / 3600;
+//                 minutes = (remaining % 3600) / 60;
+//                 seconds = remaining % 60;
+//                 LOG_INFO("| Meter Data    : %02d hr %02d min %02d sec                 |",
+//                         hours, minutes, seconds);
+//             }
+
+//             interval_sec = current_active->cfg.dlms_inst_pub_interval * 60;
+//             elapsed = now - last_publish_inst;
+//             remaining = interval_sec - elapsed;
+//             if (remaining > 0)
+//             {
+//                 hours = remaining / 3600;
+//                 minutes = (remaining % 3600) / 60;
+//                 seconds = remaining % 60;
+//                 LOG_INFO("| Instantaneous : %02d hr %02d min %02d sec                 |",
+//                         hours, minutes, seconds);
+//             }
+
+//             LOG_INFO("+----------------------------------------------------------+");
+//         }
+//         /* ------------------------------------------------ */
+//         /* mqtt1 FAILBACK - CHECK ONLY AFTER PUBLISHING   */
+//         /* ------------------------------------------------ */
+//         if (current_active == &mqtt2 &&
+//             mqtt2.connected &&
+//             !mqtt1.connected &&
+//             (now - last_mqtt1_retry >= PRI_BROKER_RECONNECT_PERIOD))
+//         {
+//             last_mqtt1_retry = now;
+
+//             LOG_INFO("[FAILBACK] Checking mqtt1 broker");
+
+//             /* Clear stale connecting state */
+//             if (mqtt1_connecting)
+//             {
+//                 if (!mqtt1.connected)
+//                 {
+//                     LOG_INFO("[FAILBACK] Clearing stale mqtt1 state");
+//                     mqtt1_connecting = 0;
+//                     if (mqtt1.client)
+//                     {
+//                         mqtt1_need_destroy = 1;
+//                         mqtt1_destroy_time = monotonic_sec();
+//                     }
+//                 }
+//             }
+
+//             /* Retry mqtt1 only after publishing is completed */
+//             if (!mqtt1_connecting &&
+//                 mqtt1.cfg.enable_mqtt)
+//             {
+//                 LOG_INFO("[FAILBACK] Trying mqtt1 broker");
+
+//                 mqtt1_connecting = 1;
+//                 mqtt_connect(&mqtt1);
+//             }
+//         }
+//         if (mqtt_led_connected)
+//             mqtt_led_set(1);
+//         else
+//             mqtt_led_set(0);
+//         /*If no active connections are there it should shows disconnected */
+//         if (!mqtt1.connected && !mqtt2.connected)
+//         {
+//             update_mqtt_status("disconnected");
+//         }
+//         /*Redis updation added here by gokul --> 02/05/2026 */
+//         if (mqtt_status_update_req)
+//         {
+//             mqtt_status_update_req = 0;
+
+//             int active = get_active_broker();
+
+//             redisReply *rly;
+
+//             printf("MQTT status update: %s | active broker = %d\n",
+//                    mqtt_status_value, active);
+
+//             if (strcmp(mqtt_status_value, "connected") == 0)
+//             {
+//                 if (active == 0) // mqtt1
+//                 {
+//                     rly = redisCommand(ctx, "HSET mqtt_0_status connection_status connected");
+//                     if (rly)
+//                         freeReplyObject(rly);
+
+//                     rly = redisCommand(ctx, "HSET mqtt_1_status connection_status disconnected");
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+//                 else if (active == 1) // mqtt2
+//                 {
+//                     rly = redisCommand(ctx, "HSET mqtt_1_status connection_status connected");
+//                     if (rly)
+//                         freeReplyObject(rly);
+
+//                     rly = redisCommand(ctx, "HSET mqtt_0_status connection_status disconnected");
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+//                 else
+//                 {
+//                     // no broker
+//                     rly = redisCommand(ctx, "HSET mqtt_0_status connection_status disconnected");
+//                     if (rly)
+//                         freeReplyObject(rly);
+
+//                     rly = redisCommand(ctx, "HSET mqtt_1_status connection_status disconnected");
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+//             }
+//             else
+//             {
+//                 // DISCONNECTED case
+//                 rly = redisCommand(ctx, "HSET mqtt_0_status connection_status %s", mqtt_status_value);
+//                 if (rly)
+//                     freeReplyObject(rly);
+
+//                 rly = redisCommand(ctx, "HSET mqtt_1_status connection_status %s", mqtt_status_value);
+//                 if (rly)
+//                     freeReplyObject(rly);
+//             }
+//         }
+//         // Uptime and last msg sent time has been updating here ---> 05/05/2026
+//         if (mqtt_time_update_req)
+//         {
+//             mqtt_time_update_req = 0;
+
+//             redisReply *rly;
+
+//             if (mqtt_time_active == 0) // mqtt1
+//             {
+//                 if (mqtt_time_update_last)
+//                 {
+//                     rly = redisCommand(ctx, "HSET mqtt_0_status uptime %s last_message_time %s", mqtt_time_uptime, mqtt_time_lastmsg);
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+//                 else
+//                 {
+//                     rly = redisCommand(ctx, "HSET mqtt_0_status uptime %s", mqtt_time_uptime);
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+
+//                 rly = redisCommand(ctx, "HSET mqtt_1_status uptime 0s");
+//                 if (rly)
+//                     freeReplyObject(rly);
+//             }
+//             else if (mqtt_time_active == 1) // mqtt2
+//             {
+//                 if (mqtt_time_update_last)
+//                 {
+//                     rly = redisCommand(ctx, "HSET mqtt_1_status uptime %s last_message_time %s", mqtt_time_uptime, mqtt_time_lastmsg);
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+//                 else
+//                 {
+//                     rly = redisCommand(ctx, "HSET mqtt_1_status uptime %s", mqtt_time_uptime);
+//                     if (rly)
+//                         freeReplyObject(rly);
+//                 }
+
+//                 rly = redisCommand(ctx, "HSET mqtt_0_status uptime 0s");
+//                 if (rly)
+//                     freeReplyObject(rly);
+//             }
+//             else // NONE
+//             {
+//                 rly = redisCommand(ctx,
+//                                    "HSET mqtt_0_status uptime 0s; HSET mqtt_1_status uptime 0s");
+//                 if (rly)
+//                     freeReplyObject(rly);
+//             }
+//         }
+//         //Subscribing topic command response function should be called from worker thread --> 29/05/2026 Gokul
+//         if(mqtt_cmd_recv)
+//         {
+//             char local_cmd[4096];
+
+//             pthread_mutex_lock(&cmd_mutex);
+
+//             strcpy(local_cmd,mqtt_cmd_buffer);
+
+//             mqtt_cmd_recv = 0;
+
+//             pthread_mutex_unlock(&cmd_mutex);
+
+//             processServerMsg(current_active, local_cmd);
+//         }
+//         send_hc_msg();
+//         update_mqtt_time(0);
+//         mqtt_loop_end:
+//         sleep(3);
+//     }
+// }
+
+/*
+ * Publish is due when the broker is ready, the interval is configured (> 0)
+ * and the interval has elapsed. An interval of 0 (missing Redis key) now
+ * means "disabled" instead of "publish every loop".
+ */
+/* DR-32: a publish interval is clamped to 1..1440 min (a day) and the due test is
+ * done in 64 bits. With 32-bit time_t on the DCU an absurd interval overflowed
+ * (interval * 60) to a negative number, and the message went out every loop. */
+#define PUB_INTERVAL_MAX_MIN 1440
+static int64_t pub_interval_sec(int interval_min)
+{
+    static int warned;
+    if (interval_min > PUB_INTERVAL_MAX_MIN)
+    {
+        if (!warned)
+        {
+            LOG_WARN("[PUBLISH] interval %d min out of range, using %d min", interval_min, PUB_INTERVAL_MAX_MIN);
+            warned = 1;
+        }
+        interval_min = PUB_INTERVAL_MAX_MIN;
+    }
+    return (int64_t)interval_min * 60;
+}
+
+#define PUB_DUE(conn, last, interval_min) \
+    (mqtt_is_ready(conn) && (interval_min) > 0 && (int64_t)(now - (last)) >= pub_interval_sec(interval_min))
+
+#define WORKER_LOOP_SEC 3
+#define MAX_CMDS_PER_LOOP 4
+
+/* Keep the watchdog fed and the connection manager running during long batches. */
+static void worker_service(void)
+{
+    send_hc_msg();
+    mqtt_conn_manager_poll();
+}
+
+/* DR-20: how long after midnight the previous date is sent again with each cycle */
+#define DR20_CATCHUP_SEC 3600
+
+/* Generate and publish the profile message of one date for every active meter
+ * (to mqtt1 and/or mqtt2). DR-20: shared by today's cycle and the catch-up of
+ * the previous date after midnight. */
+static void publish_profile_day(redisContext *ctx, const char *date, bool to1, bool to2)
+{
+    for (int i = 0; i < meter_count && stop_flag; i++)
+    {
+        cdf_result_t res = generate_profile_json(ctx, meter_serials[i], date, "all");
+
+        if (res.status == 0)
+        {
+            LOG_INFO("[PROFILE] Generated: %s", res.filename);
+
+            if (to1 && mqtt_is_ready(&mqtt1))
+            {
+                LOG_INFO("[PUBLISH] Profile %s -> mqtt1", date);
+                mqtt_send_file(&mqtt1, res.filename, METER_DATA_TOPIC);
+            }
+            if (to2 && mqtt_is_ready(&mqtt2))
+            {
+                LOG_INFO("[PUBLISH] Profile %s -> mqtt2", date);
+                mqtt_send_file(&mqtt2, res.filename, METER_DATA_TOPIC);
+            }
+            remove(res.filename);
+        }
+
+        worker_service();
+    }
+}
+
+static void log_remaining(const char *label, int interval_min, time_t now, time_t last)
+{
+    long rem;
+
+    if (interval_min <= 0)
+    {
+        LOG_INFO("│   %-10s: disabled", label);
+        return;
+    }
+
+    rem = (long)interval_min * 60 - (long)(now - last);
+    if (rem < 0)
+        rem = 0;
+
+    LOG_INFO("│   %-10s: %02ld min %02ld sec", label, rem / 60, rem % 60);
+}
+
+static void log_broker_timers(const char *name, mqtt_conn_t *c, time_t now,
+                              time_t l_modbus, time_t l_hc, time_t l_profile, time_t l_inst)
+{
+    LOG_INFO("┌─────────────────────────────────────────────────────────┐");
+    LOG_INFO("│ %s", name);
+    log_remaining("Modbus", c->cfg.modbus_data_pub_interval, now, l_modbus);
+    log_remaining("HC", c->cfg.hc_pub_interval, now, l_hc);
+    log_remaining("Profile", c->cfg.dlms_data_pub_interval, now, l_profile);
+    log_remaining("Instant", c->cfg.dlms_inst_pub_interval, now, l_inst);
+    LOG_INFO("└─────────────────────────────────────────────────────────┘");
+}
+
+static void mqtt_cfg_retry(time_t now); /* DR-19 */
+
+/* DR-17: the [STATE] line was written on every 3-s worker loop (about 28,800
+ * lines a day); now only when something in it changes */
+static void log_state_if_changed(void)
+{
+    static char last[160];
+    char cur[160];
+
+    snprintf(cur, sizeof(cur), "mqtt1: enabled=%d state=%s | mqtt2: enabled=%d state=%s | check_redis_resp=%d",
+             mqtt1.cfg.enable_mqtt, mqtt_broker_state_str(&mqtt1),
+             mqtt2.cfg.enable_mqtt, mqtt_broker_state_str(&mqtt2), check_redis_resp);
+    if (strcmp(cur, last) == 0)
+        return;
+    snprintf(last, sizeof(last), "%s", cur);
+    LOG_INFO("[STATE] %s", cur);
+}
+
+void *mqtt_worker_thread(void *arg)
+{
+    time_t timer_start = monotonic_sec();
+    time_t last_nw_logger_check = 0;
+    int last_led = -1;
+
+    (void)arg;
+
+    last_mqtt1_inst = timer_start;
+    last_mqtt1_profile = timer_start;
+    last_mqtt1_hc = timer_start;
+    last_mqtt1_modbus = timer_start;
+
+    last_mqtt2_inst = timer_start;
+    last_mqtt2_profile = timer_start;
+    last_mqtt2_hc = timer_start;
+    last_mqtt2_modbus = timer_start;
+
+    while (stop_flag)
+    {
+        /* =========================================================
+         * CONNECTION MANAGEMENT (non-blocking, sequential attempts)
+         * ========================================================= */
+        worker_service();
+
+        time_t now = monotonic_sec();
+        mqtt_cfg_retry(now); /* DR-19 */
+        int up1 = mqtt_is_ready(&mqtt1);
+        int up2 = mqtt_is_ready(&mqtt2);
+
+        /* NETWORK LOGGER */
+        if (now - last_nw_logger_check >= NW_LOGGER_CHECK)
+        {
+            last_nw_logger_check = now;
+            iec104_log_sink_poll_network();
+            send_hc_msg();
+        }
+
+        /* CLOUD LED - only touch sysfs when the state changes */
+        if ((up1 || up2) != last_led)
+        {
+            last_led = (up1 || up2);
+            mqtt_led_set(last_led);
+        }
+
+        log_state_if_changed(); /* DR-17 */
+
+        /* F7 (review 03-Oct): never wait forever for an OD response.
+         * Time only counts while the FetchDay broker is up (replies cannot be
+         * sent otherwise). On timeout all FetchDay state is reset, including
+         * the OD-table flags so cyclic files stop reading *_od_* (see F6). */
+        if (check_redis_resp == 1)
+        {
+            int fd_up = (Fetchday_cmd_broker == 0) ? up1 : up2;
+            if (!fd_up)
+                check_redis_resp_since = monotonic_sec();
+            else if (monotonic_sec() - check_redis_resp_since > FETCHDAY_TIMEOUT_SEC)
+            {
+                LOG_ERROR("FetchDay: no OD response from poller in %d s, giving up",
+                          FETCHDAY_TIMEOUT_SEC);
+                fetchday_reset_state();
+            }
+        }
+
+        // rithika 25Sept2026
+        if (check_redis_resp == 1)
+        {
+            if (Fetchday_cmd_broker == 0 && up1)
+                read_redis_resp(&mqtt1);
+            else if (Fetchday_cmd_broker == 1 && up2)
+                read_redis_resp(&mqtt2);
+        }
+
+        /* LOAD METERS */
+        if (up1 || up2)
+            load_active_meters(ctx);
+
+        /* =========================================================
+         * INSTANTANEOUS
+         * ========================================================= */
+        bool p_inst = PUB_DUE(&mqtt1, last_mqtt1_inst, mqtt1.cfg.dlms_inst_pub_interval);
+        bool s_inst = PUB_DUE(&mqtt2, last_mqtt2_inst, mqtt2.cfg.dlms_inst_pub_interval);
+
+        if (p_inst || s_inst)
+        {
+            for (int i = 0; i < meter_count && stop_flag; i++)
+            {
+                cdf_result_t res = generate_instantaneous_json(ctx, meter_serials[i]);
+
+                if (res.status == 0)
+                {
+                    if (p_inst && mqtt_is_ready(&mqtt1))
+                    {
+                        LOG_INFO("[PUBLISH] Instantaneous -> mqtt1");
+                        mqtt_send_file(&mqtt1, res.filename, INST_DATA_TOPIC);
+                    }
+                    if (s_inst && mqtt_is_ready(&mqtt2))
+                    {
+                        LOG_INFO("[PUBLISH] Instantaneous -> mqtt2");
+                        mqtt_send_file(&mqtt2, res.filename, INST_DATA_TOPIC);
+                    }
+                    remove(res.filename);
+                }
+
+                worker_service();
+            }
+
+            if (p_inst)
+                last_mqtt1_inst = now;
+            if (s_inst)
+                last_mqtt2_inst = now;
+        }
+
+        /* =========================================================
+         * METER PROFILE
+         * ========================================================= */
+        bool p_profile = PUB_DUE(&mqtt1, last_mqtt1_profile, mqtt1.cfg.dlms_data_pub_interval);
+        bool s_profile = PUB_DUE(&mqtt2, last_mqtt2_profile, mqtt2.cfg.dlms_data_pub_interval);
+
+        if (p_profile || s_profile)
+        {
+            time_t t = time(NULL);
+            struct tm tm_det;
+            char today_date[16];
+
+            localtime_r(&t, &tm_det);
+            strftime(today_date, sizeof(today_date), "%Y-%m-%d", &tm_det);
+
+            /* DR-20: the cyclic message carries "today" only, so the blocks recorded
+             * after the last cycle before midnight (the DA polls the meters some
+             * minutes after each block) were never sent cyclically. When the date
+             * changes, every cycle of the next DR20_CATCHUP_SEC also sends the date of
+             * the last cycle again (it fills up as the DA catches up), then today. */
+            static char last_profile_date1[16], last_profile_date2[16];
+            static char catchup_date1[16], catchup_date2[16];
+            static time_t catchup_until1, catchup_until2;
+
+            if (p_profile && last_profile_date1[0] && strcmp(last_profile_date1, today_date) != 0)
+            {
+                snprintf(catchup_date1, sizeof(catchup_date1), "%s", last_profile_date1);
+                catchup_until1 = now + DR20_CATCHUP_SEC;
+            }
+            if (s_profile && last_profile_date2[0] && strcmp(last_profile_date2, today_date) != 0)
+            {
+                snprintf(catchup_date2, sizeof(catchup_date2), "%s", last_profile_date2);
+                catchup_until2 = now + DR20_CATCHUP_SEC;
+            }
+            bool p_prev = p_profile && catchup_date1[0] && now < catchup_until1;
+            bool s_prev = s_profile && catchup_date2[0] && now < catchup_until2;
+
+            if (p_prev && s_prev && strcmp(catchup_date1, catchup_date2) == 0)
+            {
+                publish_profile_day(ctx, catchup_date1, true, true);
+            }
+            else
+            {
+                if (p_prev)
+                    publish_profile_day(ctx, catchup_date1, true, false);
+                if (s_prev)
+                    publish_profile_day(ctx, catchup_date2, false, true);
+            }
+
+            publish_profile_day(ctx, today_date, p_profile, s_profile);
+
+            if (p_profile)
+            {
+                last_mqtt1_profile = now;
+                snprintf(last_profile_date1, sizeof(last_profile_date1), "%s", today_date);
+            }
+            if (s_profile)
+            {
+                last_mqtt2_profile = now;
+                snprintf(last_profile_date2, sizeof(last_profile_date2), "%s", today_date);
+            }
+        }
+
+        /* =========================================================
+         * HEALTH CHECK
+         * ========================================================= */
+        bool p_hc = PUB_DUE(&mqtt1, last_mqtt1_hc, mqtt1.cfg.hc_pub_interval);
+        bool s_hc = PUB_DUE(&mqtt2, last_mqtt2_hc, mqtt2.cfg.hc_pub_interval);
+
+        if (p_hc || s_hc)
+        {
+            char xml_buf[PAYLOAD_BUFFER_SIZE];
+            int file_size = 0;
+
+            build_health_status_json(ctx, xml_buf, sizeof(xml_buf), &file_size);
+
+            if (file_size > 0)
+            {
+                if (p_hc && mqtt_is_ready(&mqtt1))
+                {
+                    LOG_INFO("[PUBLISH] Health -> mqtt1");
+                    mqtt_send_msg(&mqtt1, xml_buf, file_size, HEALTH_DATA_TOPIC);
+                }
+                if (s_hc && mqtt_is_ready(&mqtt2))
+                {
+                    LOG_INFO("[PUBLISH] Health -> mqtt2");
+                    mqtt_send_msg(&mqtt2, xml_buf, file_size, HEALTH_DATA_TOPIC);
+                }
+            }
+            else
+            {
+                LOG_ERROR("Failed to build health status JSON");
+            }
+
+            if (p_hc)
+                last_mqtt1_hc = now;
+            if (s_hc)
+                last_mqtt2_hc = now;
+
+            worker_service();
+        }
+
+        /* =========================================================
+         * MODBUS
+         * ========================================================= */
+        bool p_modbus = PUB_DUE(&mqtt1, last_mqtt1_modbus, mqtt1.cfg.modbus_data_pub_interval);
+        bool s_modbus = PUB_DUE(&mqtt2, last_mqtt2_modbus, mqtt2.cfg.modbus_data_pub_interval);
+
+        if (p_modbus || s_modbus)
+        {
+            char *json = modbus_export_json(ctx, 2);
+            if (json)
+            {
+                if (p_modbus && mqtt_is_ready(&mqtt1))
+                {
+                    LOG_INFO("[PUBLISH] Modbus -> mqtt1");
+                    mqtt_send_msg(&mqtt1, json, strlen(json), MODBUS_DATA_TOPIC);
+                }
+                if (s_modbus && mqtt_is_ready(&mqtt2))
+                {
+                    LOG_INFO("[PUBLISH] Modbus -> mqtt2");
+                    mqtt_send_msg(&mqtt2, json, strlen(json), MODBUS_DATA_TOPIC);
+                }
+                free(json);
+            }
+            else
+            {
+                LOG_ERROR("Failed to generate Modbus JSON");
+            }
+
+            if (p_modbus)
+                last_mqtt1_modbus = now;
+            if (s_modbus)
+                last_mqtt2_modbus = now;
+
+            worker_service();
+        }
+
+        /* =========================================================
+         * PUBLISHING STATUS / REMAINING TIME
+         * ========================================================= */
+        now = monotonic_sec();
+
+        if (mqtt_is_ready(&mqtt1))
+            log_broker_timers("MQTT1", &mqtt1, now, last_mqtt1_modbus, last_mqtt1_hc, last_mqtt1_profile, last_mqtt1_inst);
+
+        if (mqtt_is_ready(&mqtt2))
+            log_broker_timers("MQTT2", &mqtt2, now, last_mqtt2_modbus, last_mqtt2_hc, last_mqtt2_profile, last_mqtt2_inst);
+
+        /* =========================================================
+         * MQTT STATUS (Redis written only from this thread)
+         * ========================================================= */
+        if (mqtt_status_update_req)
+        {
+            redisReply *rly;
+            int c1 = mqtt_is_ready(&mqtt1);
+            int c2 = mqtt_is_ready(&mqtt2);
+
+            mqtt_status_update_req = 0;
+
+            rly = redisCommand(ctx, "HSET %s connection_status %s", mqtt1_status_hash, c1 ? "connected" : "disconnected");
+            if (rly)
+                freeReplyObject(rly);
+
+            rly = redisCommand(ctx, "HSET %s connection_status %s", mqtt2_status_hash, c2 ? "connected" : "disconnected");
+            if (rly)
+                freeReplyObject(rly);
+
+            LOG_INFO("[STATUS] mqtt1=%s mqtt2=%s", c1 ? "connected" : "disconnected", c2 ? "connected" : "disconnected");
+        }
+
+        /* =========================================================
+         * MQTT TIME STATUS
+         * ========================================================= */
+        if (mqtt_time_update_req)
+        {
+            redisReply *rly = NULL;
+            const char *hash = NULL;
+
+            mqtt_time_update_req = 0;
+
+            if (mqtt_time_active == 0)
+                hash = mqtt1_status_hash;
+            else if (mqtt_time_active == 1)
+                hash = mqtt2_status_hash;
+
+            if (hash)
+            {
+                if (mqtt_time_update_last)
+                    rly = redisCommand(ctx, "HSET %s uptime %s last_message_time %s", hash, mqtt_time_uptime, mqtt_time_lastmsg);
+                else
+                    rly = redisCommand(ctx, "HSET %s uptime %s", hash, mqtt_time_uptime);
+                if (rly)
+                    freeReplyObject(rly);
+            }
+        }
+
+        /* =========================================================
+         * INCOMING MQTT COMMANDS (queued by the Paho callback)
+         * ========================================================= */
+        {
+            char local_cmd[4096];
+            int broker = -1;
+            int handled = 0;
+
+            while (handled < MAX_CMDS_PER_LOOP && stop_flag &&
+                   mqtt_cmd_dequeue(local_cmd, sizeof(local_cmd), &broker))
+            {
+                handled++;
+
+                if (broker == 0)
+                {
+                    LOG_INFO("[COMMAND] Processing command from mqtt1");
+                    processServerMsg(&mqtt1, local_cmd, broker);
+                }
+                else if (broker == 1)
+                {
+                    LOG_INFO("[COMMAND] Processing command from mqtt2");
+                    processServerMsg(&mqtt2, local_cmd, broker);
+                }
+                else
+                {
+                    LOG_ERROR("[COMMAND] Unknown broker source");
+                }
+
+                worker_service();
+            }
+        }
+
+        send_hc_msg();
+        update_mqtt_time(0);
+
+        /* sleep in 1 s slices so shutdown is quick */
+        for (int s = 0; s < WORKER_LOOP_SEC && stop_flag; s++)
+            sleep(1);
+    }
+
+    LOG_INFO("[WORKER] MQTT worker thread exiting");
+    return NULL;
+}
+
+/*Loading MQTT Configuration for Broker1 and Broker2*/
+// void load_mqtt_cfg(const char *hash, mqtt_cfg_t *cfg)
+// {
+//     int i;
+
+//     cfg->enable_mqtt = redis_get_int(ctx, hash, "enable_mqtt");
+//     cfg->broker_port = redis_get_int(ctx, hash, "broker_port");
+//     cfg->keep_alive = redis_get_int(ctx, hash, "keep_alive_interval");
+//     cfg->qos = redis_get_int(ctx, hash, "qos");
+//     cfg->per_data_interval = redis_get_int(ctx, hash, "per_data_interval");
+//     cfg->enable_ssl = redis_get_int(ctx, hash, "enable_ssl");
+
+//     redis_get_str(ctx, hash, "broker_ip_url", cfg->broker_ip, MAX_STR_LEN);
+//     redis_get_str(ctx, hash, "client_id", cfg->client_id, MAX_STR_LEN);
+//     redis_get_str(ctx, hash, "username", cfg->username, MAX_STR_LEN);
+//     redis_get_str(ctx, hash, "password", cfg->password, MAX_STR_LEN);
+//     redis_get_str(ctx, hash, "per_data_topic", cfg->per_data_topic, MAX_TOPIC_LEN);
+//     redis_get_str(ctx, hash, "event_pub_topic", cfg->event_pub_topic, MAX_TOPIC_LEN);
+//     redis_get_str(ctx, hash, "diag_pub_topic", cfg->diag_pub_topic, MAX_TOPIC_LEN);
+
+//     for (i = 0; i < MAX_SUB_TOPICS; i++)
+//     {
+//         char key[32];
+//         snprintf(key, sizeof(key), "subscribe_topic%d", i + 1);
+//         redis_get_str(ctx, hash, key, cfg->subscribe_topics[i], MAX_TOPIC_LEN);
+//     }
+
+//     // redisFree(ctx);
+// }
+
+void print_mqtt_full_cfg(const mqtt_cfg_t *cfg)
+{
+    int i;
+
+    printf("\n========== MQTT FULL CONFIG ==========\n");
+
+    // ---- Core ----
+    printf("enable_mqtt        : %d\n", cfg->enable_mqtt);
+    printf("mqtt1            : %d\n", cfg->mqtt1);
+    printf("clean_session      : %d\n", cfg->clean_session);
+
+    printf("broker_ip          : %s\n", cfg->broker_ip);
+    printf("broker_port        : %d\n", cfg->broker_port);
+
+    printf("client_id          : %s\n", cfg->client_id);
+    printf("username           : %s\n", cfg->username);
+    printf("password           : %s\n", cfg->password);
+
+    printf("keep_alive         : %d\n", cfg->keep_alive);
+    printf("qos                : %d\n", cfg->qos);
+    printf("insecure           : %d\n", cfg->insecure);
+
+    // ---- Publish Topics ----
+    printf("\n--- Publish Topics ---\n");
+    printf("modbus_data_topic  : %s\n", cfg->cyclic_modbus_data_topic);
+    printf("dlms_data_topic    : %s\n", cfg->cyclic_dlms_data_topic);
+    printf("dlms_inst_topic    : %s\n", cfg->inst_data_topic);
+    printf("health_check_topic : %s\n", cfg->health_check_data_topic);
+    printf("cmd_response_topic : %s\n", cfg->cmd_response_topic);
+
+    // ---- Subscribe Topics ----
+    printf("\n--- Subscribe Topics ---\n");
+    for (i = 0; i < MAX_SUB_TOPICS; i++)
+    {
+        printf("subscribe_topic[%d] : %s\n", i + 1, cfg->subscribe_topics[i]);
+    }
+
+    // ---- Publish Intervals ----
+    printf("\n--- Publish Intervals (minutes) ---\n");
+    printf("hc_pub_interval          : %d\n", cfg->hc_pub_interval);
+    printf("dlms_inst_pub_interval   : %d\n", cfg->dlms_inst_pub_interval);
+    printf("dlms_data_pub_interval   : %d\n", cfg->dlms_data_pub_interval);
+    printf("modbus_data_pub_interval : %d\n", cfg->modbus_data_pub_interval);
+
+    // ---- SSL ----
+    printf("\n--- SSL Config ---\n");
+    printf("enable_ssl         : %d\n", cfg->enable_ssl);
+    printf("ca_certificate     : %s\n", cfg->ca_certificate);
+    printf("client_certificate : %s\n", cfg->client_certificate);
+    printf("client_key         : %s\n", cfg->client_key);
+    printf("key_password       : %s\n", cfg->key_password);
+    printf("encrypted_key      : %d\n", cfg->encrypted_key);
+
+    printf("======================================\n\n");
+}
+
+/* DR-19: set when a config hash could not be read (Redis error reply, e.g.
+ * LOADING at boot); the worker then re-reads the configuration */
+static int g_mqtt_cfg_read_failed;
+static volatile int g_mqtt_cfg_reload_pending;
+
+#define MQTT_CFG_READ_TRIES 3
+#define MQTT_CFG_RETRY_SEC 30
+
+/* DR-19: the hash answers HLEN with an integer (0 if missing). An error or no
+ * reply means Redis could not be read, which must not look like "disabled". */
+static int mqtt_cfg_hash_readable(const char *hash)
+{
+    redisReply *r = redisCommand(ctx, "HLEN %s", hash);
+    int ok = (r && r->type == REDIS_REPLY_INTEGER);
+    if (!ok)
+        LOG_WARN("[CFG] %s not readable: %s", hash,
+                 r && r->type == REDIS_REPLY_ERROR ? r->str : (ctx && ctx->err ? ctx->errstr : "no reply"));
+    if (r)
+        freeReplyObject(r);
+    return ok;
+}
+
+void load_mqtt_cfg(const char *hash, mqtt_cfg_t *cfg)
+{
+    int i;
+
+    memset(cfg, 0, sizeof(mqtt_cfg_t));
+
+    /* DR-19: a Redis error is retried; if it persists the broker stays off for
+     * now and the worker re-reads the configuration every MQTT_CFG_RETRY_SEC */
+    int tries = 0;
+    while (!mqtt_cfg_hash_readable(hash))
+    {
+        if (++tries >= MQTT_CFG_READ_TRIES)
+        {
+            LOG_ERROR("[CFG] %s unreadable after %d tries - broker off until it can be read", hash, tries);
+            g_mqtt_cfg_read_failed = 1;
+            return;
+        }
+        sleep(2);
+    }
+
+    // ----------- INT VALUES -----------
+    cfg->enable_mqtt = redis_get_int(ctx, hash, "enable_mqtt");
+    cfg->broker_port = redis_get_int(ctx, hash, "broker_port");
+    cfg->keep_alive = redis_get_int(ctx, hash, "keep_alive_interval");
+    cfg->qos = redis_get_int(ctx, hash, "qos");
+    cfg->mqtt1 = redis_get_int(ctx, hash, "mqtt1");
+    cfg->clean_session = redis_get_int(ctx, hash, "clean_session");
+    cfg->insecure = redis_get_int(ctx, hash, "insecure");
+
+    // ----------- INTERVALS (minutes → convert to seconds if needed) -----------
+    cfg->hc_pub_interval = redis_get_int(ctx, hash, "hc_pub_interval");
+    cfg->dlms_inst_pub_interval = redis_get_int(ctx, hash, "dlms_inst_pub_interval");
+    cfg->dlms_data_pub_interval = redis_get_int(ctx, hash, "dlms_data_pub_interval");
+    cfg->modbus_data_pub_interval = redis_get_int(ctx, hash, "modbus_data_pub_interval");
+
+    // ----------- STRING VALUES -----------
+    redis_get_str(ctx, hash, "broker_ip_url", cfg->broker_ip, SIZE_128);
+    redis_get_str(ctx, hash, "client_id", cfg->client_id, MAX_STR_LEN);
+    redis_get_str(ctx, hash, "username", cfg->username, MAX_STR_LEN);
+    redis_get_str(ctx, hash, "password", cfg->password, MAX_STR_LEN);
+
+    // ----------- PUBLISH TOPICS -----------
+    redis_get_str(ctx, hash, "modbus_data_pub_topic", cfg->cyclic_modbus_data_topic, MAX_TOPIC_LEN);
+    redis_get_str(ctx, hash, "dlms_data_pub_topic", cfg->cyclic_dlms_data_topic, MAX_TOPIC_LEN);
+    redis_get_str(ctx, hash, "dlms_inst_pub_topic", cfg->inst_data_topic, MAX_TOPIC_LEN);
+    redis_get_str(ctx, hash, "hc_pub_topic", cfg->health_check_data_topic, MAX_TOPIC_LEN);
+    redis_get_str(ctx, hash, "cmd_resp_pub_topic", cfg->cmd_response_topic, MAX_TOPIC_LEN);
+
+    // ----------- SSL -----------
+    cfg->enable_ssl = redis_get_int(ctx, hash, "enable_ssl");
+    cfg->encrypted_key = redis_get_int(ctx, hash, "encrypted_key");
+
+    redis_get_str(ctx, hash, "ca_certificate", cfg->ca_certificate, MAX_STR_LEN);
+    redis_get_str(ctx, hash, "client_certificate", cfg->client_certificate, MAX_STR_LEN);
+    redis_get_str(ctx, hash, "client_key", cfg->client_key, MAX_STR_LEN);
+    redis_get_str(ctx, hash, "key_password", cfg->key_password, MAX_STR_LEN);
+
+    // ----------- SUBSCRIBE TOPICS -----------
+    for (i = 0; i < MAX_SUB_TOPICS; i++)
+    {
+        char key[32];
+        snprintf(key, sizeof(key), "cmd_req_topic");
+
+        memset(cfg->subscribe_topics[i], 0, MAX_TOPIC_LEN);
+        redis_get_str(ctx, hash, key, cfg->subscribe_topics[i], MAX_TOPIC_LEN);
+    }
+
+    // To get and store serial number from the redis hash !!!
+    redis_get_str(ctx, "dcu_info", "serial_num", dcu_ser_num, SIZE_32);
+    printf("dcu_ser_num %s\n", dcu_ser_num);
+}
+/**
+ * load_mqtt_ssl_cfg()
+ * ------------------
+ * Reads SSL/TLS file paths from Redis.
+ *
+ * File Mapping:
+ *  ssl_file1 -> CA certificate
+ *  ssl_file2 -> Client certificate
+ *  ssl_file3 -> Private key
+ *  ssl_file4 -> Optional certificate chain
+ */
+void load_mqtt_ssl_cfg(const char *hash, mqtt_ssl_cfg_t *ssl)
+{
+    int i;
+
+    ssl->num_files = 0;
+
+    redisReply *r = redisCommand(ctx, "HGET %s num_mqtt_ssl_files", hash);
+    if (r && r->type == REDIS_REPLY_STRING)
+    {
+        ssl->num_files = atoi(r->str);
+        LOG_INFO("[TLS] Number of SSL Files %d", ssl->num_files);
+    }
+    freeReplyObject(r);
+
+    for (i = 0; i < ssl->num_files && i < MAX_SSL_FILES; i++)
+    {
+        char key[32];
+        snprintf(key, sizeof(key), "ssl_file_%d", i + 1);
+        LOG_INFO("Key = %s", key);
+        LOG_INFO("Inside SSL files redis get...");
+        r = redisCommand(ctx, "HGET %s %s", hash, key);
+        LOG_INFO("r->type %d", r->type);
+        if (r && r->type == REDIS_REPLY_STRING)
+        {
+            strncpy(ssl->ssl_files[i], r->str, MAX_STR_LEN - 1);
+            ssl->ssl_files[i][MAX_STR_LEN - 1] = '\0';
+            LOG_INFO("[TLS] ssl_files[%d] = %s", i, ssl->ssl_files[i]);
+        }
+        freeReplyObject(r);
+    }
+
+    // redisFree(ctx);
+}
+
+/* DR-19: primary/secondary mapping and both broker configs; -1 if a config hash
+ * could not be read */
+static int load_all_mqtt_cfg(void)
+{
+    g_mqtt_cfg_read_failed = 0;
+    if (!mqtt_cfg_hash_readable("mqtt_0_cfg"))
+    {
+        g_mqtt_cfg_read_failed = 1; /* "primary" below would read as 0 */
+        memset(&mqtt1.cfg, 0, sizeof(mqtt1.cfg));
+        memset(&mqtt2.cfg, 0, sizeof(mqtt2.cfg));
+        return -1;
+    }
+    int is_mqtt1 = redis_get_int(ctx, "mqtt_0_cfg", "primary");
+    if (is_mqtt1)
+    {
+        certificate_path_check_mqtt1 = 0;
+        certificate_path_check_mqtt2 = 1;
+        strcpy(mqtt1_status_hash, "mqtt_0_status");
+        strcpy(mqtt2_status_hash, "mqtt_1_status");
+        LOG_INFO("Mqtt-1 is configured as mqtt1!!!");
+        load_mqtt_cfg("mqtt_0_cfg", &mqtt1.cfg);
+        LOG_INFO("Mqtt-2 is configured as mqtt2!!!");
+        load_mqtt_cfg("mqtt_1_cfg", &mqtt2.cfg);
+    }
+    else
+    {
+        certificate_path_check_mqtt1 = 1;
+        certificate_path_check_mqtt2 = 0;
+
+        strcpy(mqtt1_status_hash, "mqtt_1_status");
+        strcpy(mqtt2_status_hash, "mqtt_0_status");
+
+        LOG_INFO("Mqtt-2 is configured as mqtt1!!!");
+        load_mqtt_cfg("mqtt_1_cfg", &mqtt1.cfg);
+
+        LOG_INFO("Mqtt-1 is configured as mqtt2!!!");
+        load_mqtt_cfg("mqtt_0_cfg", &mqtt2.cfg);
+    }
+    return g_mqtt_cfg_read_failed ? -1 : 0;
+}
+
+/* DR-19: called from the worker loop; re-reads the config while it is pending */
+static void mqtt_cfg_retry(time_t now)
+{
+    static time_t last_try;
+    if (!g_mqtt_cfg_reload_pending || now - last_try < MQTT_CFG_RETRY_SEC)
+        return;
+    last_try = now;
+    if (load_all_mqtt_cfg() == 0)
+    {
+        g_mqtt_cfg_reload_pending = 0;
+        LOG_INFO("[CFG] MQTT config read after a Redis error - brokers enabled as configured");
+        print_mqtt_full_cfg(&mqtt1.cfg);
+        print_mqtt_full_cfg(&mqtt2.cfg);
+    }
+}
+
+static pthread_t g_worker_thread;
+static int g_worker_started = 0;
+
+void mqtt_module_start()
+{
+    int rc;
+
+    MQTTAsync_setTraceCallback(mqtt_trace_callback);
+    MQTTAsync_setTraceLevel(MQTTASYNC_TRACE_PROTOCOL);
+
+    LOG_INFO("[INIT] Loading MQTT configs");
+    if (load_all_mqtt_cfg() != 0)
+    {
+        LOG_ERROR("[INIT] MQTT config not readable from Redis - retrying every %d s", MQTT_CFG_RETRY_SEC);
+        g_mqtt_cfg_reload_pending = 1;
+    }
+    send_hc_msg();
+
+    mqtt1.client = NULL;
+    mqtt1.connected = false;
+    mqtt2.client = NULL;
+    mqtt2.connected = false;
+
+    print_mqtt_full_cfg(&mqtt1.cfg);
+    print_mqtt_full_cfg(&mqtt2.cfg);
+
+    if (mqtt_led_init() != 0)
+        LOG_WARN("[LED] Cloud LED GPIO %d not available", MQTT_LED_GPIO);
+
+    /* All connecting is done by the worker thread (sequential, non-blocking). */
+    rc = pthread_create(&g_worker_thread, NULL, mqtt_worker_thread, NULL);
+    if (rc != 0)
+    {
+        LOG_ERROR("[INIT] Failed to create MQTT worker thread rc=%d", rc);
+        g_worker_started = 0;
+        stop_flag = 0;
+        return;
+    }
+    g_worker_started = 1;
+}
+
+/* This function will handle the closing broker connections of both mqtt1 and mqtt2 -- 27/04/2026 */
+// void mqtt_cleanup()
+// {
+//     LOG_INFO("Cleaning up MQTT connections...");
+
+//     if (mqtt1.client)
+//     {
+//         MQTTAsync_disconnectOptions disc_opts =
+//             MQTTAsync_disconnectOptions_initializer;
+
+//         MQTTAsync_disconnect(mqtt1.client, &disc_opts);
+//         MQTTAsync_destroy(&mqtt1.client);
+//         mqtt1.client = NULL;
+//     }
+
+//     if (mqtt2.client)
+//     {
+//         MQTTAsync_disconnectOptions disc_opts =
+//             MQTTAsync_disconnectOptions_initializer;
+
+//         MQTTAsync_disconnect(mqtt2.client, &disc_opts);
+//         MQTTAsync_destroy(&mqtt2.client);
+//         mqtt2.client = NULL;
+//     }
+
+//     LOG_INFO("MQTT cleanup completed");
+// }
+
+void mqtt_cleanup()
+{
+    LOG_INFO("Cleaning up MQTT connections...");
+
+    /*
+     * Stop and join the worker FIRST. Previously the clients were destroyed
+     * while the worker could still be publishing on them (use-after-free).
+     * All publish waits are bounded, so this join cannot hang.
+     */
+    stop_flag = 0;
+    if (g_worker_started)
+    {
+        pthread_join(g_worker_thread, NULL);
+        g_worker_started = 0;
+        LOG_INFO("[MQTT] Worker thread stopped");
+    }
+
+    /* Worker is gone: this thread is now the only Redis user. */
+    if (ctx)
+    {
+        redisReply *rly;
+
+        rly = redisCommand(ctx, "HSET %s connection_status disconnected uptime 0s", mqtt1_status_hash);
+        if (rly)
+            freeReplyObject(rly);
+
+        rly = redisCommand(ctx, "HSET %s connection_status disconnected uptime 0s", mqtt2_status_hash);
+        if (rly)
+            freeReplyObject(rly);
+
+        LOG_INFO("[MQTT] Redis status updated: mqtt1=mqtt2=disconnected, uptime=0s");
+    }
+
+    /* Bounded DISCONNECT + destroy of both clients. */
+    mqtt_conn_manager_shutdown();
+
+    mqtt_led_connected = 0;
+    mqtt_led_set(0);
+    current_active = NULL;
+    cur_active_mqtt = -1;
+
+    LOG_INFO("MQTT cleanup completed");
+}
+
+void handle_signal(int sig)
+{
+    /* Only async-signal-safe work here: logging can take a lock and deadlock. */
+    (void)sig;
+    stop_flag = 0;
+}
+
+int main()
+{
+    // Signal Handling for MQTT Process -- Gokul added this 27/04/2026
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    // signal(SIGQUIT, handle_signal);
+    printf("MQTT Process started\n"); // Gokul added
+
+    /* DR-33: the network logger is initialised before the first log line (it has its
+     * own Redis connection); log lines written before it were not sent */
+    // rithika 16April2026
+    char redis_key[64];
+    snprintf(redis_key, sizeof(redis_key), "MQTT_PROC");
+    dcu_netlog_init(redis_key);
+
+    if (log_init() != 0)
+    {
+        fprintf(stderr, "WARNING: Logging unavailable, continuing without log file.\n");
+    }
+
+    ctx = redis_connect();
+    if (!ctx)
+    {
+        LOG_ERROR("Cannot connect to Redis - aborting");
+        log_close();
+        return EXIT_FAILURE;
+    }
+
+    send_hc_msg();
+
+    seq_num = 1;
+    mqtt_module_start();
+
+    while (stop_flag)
+    {
+        // rithika 16April2026
+        iec104_log_sink_poll_network();
+        sleep(1);
+    }
+
+    LOG_INFO("Shutdown requested, stopping MQTT process...");
+
+    mqtt_cleanup(); // Gokul added the mqtt cleanup function to shut down the process gracefully..!! 27/04/2026
+
+    redisFree(ctx);
+
+    log_close();
+    // rithika 16April2026
+    dcu_netlog_close();
+
+    return 0;
+}

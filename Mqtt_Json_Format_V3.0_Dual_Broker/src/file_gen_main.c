@@ -16,6 +16,7 @@
  */
 
 #include "../include/general.h"
+#include <ctype.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -874,6 +875,98 @@ void json_write_header(FILE *fp, char *data_Type)
     fprintf(fp, "  \"DATATYPE\": \"%s\",\n", data_Type);
 }
 
+/*
+ * clean_modem_field()
+ * -------------------
+ * The modem scripts store the raw AT response in Redis, e.g.
+ *   imei     = "\r\n860710088983823\r\n\r\nOK\r\n"
+ *   operator = "\r\nViIndia\r\n\r\nOK "
+ * Printed as-is, the CR/LF break the JSON (a raw newline inside a JSON string
+ * is invalid) and "OK" ends up in the value. Keep only the useful text:
+ *   - the first line that is not empty, "OK", "ERROR" or an echoed "AT+..."
+ *   - for a line like  +COPS: 0,0,"Vi India",7  the part inside the quotes
+ *   - digits_only (IMEI): only 0-9
+ *   - otherwise: no control characters, quotes or backslashes, trimmed
+ * Works in place (the result is never longer than the input).
+ */
+static void clean_modem_field(char *s, int digits_only)
+{
+    char *line, *end, *next, *q1, *q2, *w, *r;
+    size_t n = 0;
+    int found = 0;
+
+    if (s == NULL)
+        return;
+
+    line = s;
+    end = s;
+    while (*line)
+    {
+        end = line;
+        while (*end && *end != '\r' && *end != '\n')
+            end++;
+        next = end;
+        while (*next == '\r' || *next == '\n')
+            next++;
+
+        while (line < end && isspace((unsigned char)*line))
+            line++;
+        while (end > line && isspace((unsigned char)end[-1]))
+            end--;
+        n = (size_t)(end - line);
+
+        if (n == 0 ||
+            (n == 2 && memcmp(line, "OK", 2) == 0) ||
+            (n == 5 && memcmp(line, "ERROR", 5) == 0) ||
+            (n >= 3 && (memcmp(line, "AT+", 3) == 0 || memcmp(line, "at+", 3) == 0)))
+        {
+            line = next;
+            continue;
+        }
+        found = 1;
+        break;
+    }
+
+    if (!found)
+    {
+        s[0] = '\0';
+        return;
+    }
+
+    /* +COPS: 0,0,"Vi India",7  ->  Vi India */
+    q1 = memchr(line, '"', n);
+    if (q1 != NULL)
+    {
+        q2 = memchr(q1 + 1, '"', (size_t)(end - q1 - 1));
+        if (q2 != NULL)
+        {
+            line = q1 + 1;
+            n = (size_t)(q2 - line);
+        }
+    }
+
+    memmove(s, line, n);
+    s[n] = '\0';
+
+    /* filter characters */
+    for (r = s, w = s; *r; r++)
+    {
+        unsigned char c = (unsigned char)*r;
+
+        if (digits_only ? isdigit(c) : !(iscntrl(c) || c == '"' || c == '\\'))
+            *w++ = (char)c;
+    }
+    *w = '\0';
+
+    /* final trim */
+    while (w > s && isspace((unsigned char)w[-1]))
+        *--w = '\0';
+    for (r = s; *r && isspace((unsigned char)*r); r++)
+        ;
+    if (r != s)
+        memmove(s, r, strlen(r) + 1);
+}
+
 void json_write_general(redisContext *ctx, FILE *fp, const char *serial, const char *dt_str)
 {
     (void)serial; /* Future: look up meter-specific DCU details */
@@ -949,13 +1042,14 @@ void json_write_general(redisContext *ctx, FILE *fp, const char *serial, const c
     char *dcu_ser = redis_hget(ctx, DCU_HASH, "serial_num");
     char *fw_ver = redis_hget(ctx, DCU_HASH, "fw_ver");
     char *modem_imei = redis_hget(ctx, "modem_status", "imei");
+    clean_modem_field(modem_imei, 1); /* raw AT response -> digits only (NULL-safe) */
     char *dcu_loc = redis_hget(ctx, DCU_HASH, "dcu_loc");
 
     fprintf(fp, "  \"NP\": {\n");
     fprintf(fp, "    \"DEVNAME\": \"%s\",\n", dcu_name);
     fprintf(fp, "    \"DEV_LOC\": \"%s\",\n", dcu_loc);
     fprintf(fp, "    \"SN\": \"%s\",\n", dcu_ser);
-    fprintf(fp, "    \"IMEI\": \"%s\",\n", modem_imei);
+    fprintf(fp, "    \"IMEI\": \"%s\",\n", modem_imei ? modem_imei : "");
     fprintf(fp, "    \"FW_VER\": \"%s\",\n", fw_ver);
     fprintf(fp, "    \"TS\": \"%s\"\n", dt_str);
     fprintf(fp, "  },\n");

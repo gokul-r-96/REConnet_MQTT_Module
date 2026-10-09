@@ -1472,32 +1472,38 @@ void mqtt_module_start()
     MQTTAsync_setTraceLevel(MQTTASYNC_TRACE_PROTOCOL);
 
     LOG_INFO("[INIT] Loading MQTT configs");
-    int is_mqtt1 = redis_get_int(ctx, "mqtt_0_cfg", "primary");
-    if (is_mqtt1)
-    {
-        certificate_path_check_mqtt1 = 0;
-        certificate_path_check_mqtt2 = 1;
-        strcpy(mqtt1_status_hash, "mqtt_0_status");
-        strcpy(mqtt2_status_hash, "mqtt_1_status");
-        LOG_INFO("Mqtt-1 is configured as mqtt1!!!");
-        load_mqtt_cfg("mqtt_0_cfg", &mqtt1.cfg);
-        LOG_INFO("Mqtt-2 is configured as mqtt2!!!");
-        load_mqtt_cfg("mqtt_1_cfg", &mqtt2.cfg);
-    }
-    else
-    {
-        certificate_path_check_mqtt1 = 1;
-        certificate_path_check_mqtt2 = 0;
+    // int is_mqtt1 = redis_get_int(ctx, "mqtt_0_cfg", "primary");
+    // if (is_mqtt1)
+    // {
+    //     certificate_path_check_mqtt1 = 0;
+    //     certificate_path_check_mqtt2 = 1;
+    //     strcpy(mqtt1_status_hash, "mqtt_0_status");
+    //     strcpy(mqtt2_status_hash, "mqtt_1_status");
+    //     LOG_INFO("Mqtt-1 is configured as mqtt1!!!");
+    //     load_mqtt_cfg("mqtt_0_cfg", &mqtt1.cfg);
+    //     LOG_INFO("Mqtt-2 is configured as mqtt2!!!");
+    //     load_mqtt_cfg("mqtt_1_cfg", &mqtt2.cfg);
+    // }
+    // else
+    // {
+    //     certificate_path_check_mqtt1 = 1;
+    //     certificate_path_check_mqtt2 = 0;
 
-        strcpy(mqtt1_status_hash, "mqtt_1_status");
-        strcpy(mqtt2_status_hash, "mqtt_0_status");
+    //     strcpy(mqtt1_status_hash, "mqtt_1_status");
+    //     strcpy(mqtt2_status_hash, "mqtt_0_status");
 
-        LOG_INFO("Mqtt-2 is configured as mqtt1!!!");
-        load_mqtt_cfg("mqtt_1_cfg", &mqtt1.cfg);
+    //     LOG_INFO("Mqtt-2 is configured as mqtt1!!!");
+    //     load_mqtt_cfg("mqtt_1_cfg", &mqtt1.cfg);
 
-        LOG_INFO("Mqtt-1 is configured as mqtt2!!!");
-        load_mqtt_cfg("mqtt_0_cfg", &mqtt2.cfg);
-    }
+    //     LOG_INFO("Mqtt-1 is configured as mqtt2!!!");
+    //     load_mqtt_cfg("mqtt_0_cfg", &mqtt2.cfg);
+    // }
+    strcpy(mqtt1_status_hash, "mqtt_0_status");
+    strcpy(mqtt2_status_hash, "mqtt_1_status");
+    LOG_INFO("Mqtt-1 is configured as mqtt1!!!");
+    load_mqtt_cfg("mqtt_0_cfg", &mqtt1.cfg);
+    LOG_INFO("Mqtt-2 is configured as mqtt2!!!");
+    load_mqtt_cfg("mqtt_1_cfg", &mqtt2.cfg);
     send_hc_msg();
 
     mqtt1.client = NULL;
