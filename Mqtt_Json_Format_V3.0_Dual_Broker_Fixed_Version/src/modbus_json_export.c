@@ -38,9 +38,27 @@ void cyclic_seq_str(char *buf, size_t len);
 /* =========================================================================
  * Growable JSON buffer
  * ========================================================================= */
-static int export_cmd_register(jbuf_t *, redisContext *,const char *, const char *,modbus_reg_t *, int);
-static int export_cmd_modrtu_device(jbuf_t *, redisContext *, cmd_request_t *);
+static int cmd_write_points(jbuf_t *, redisContext *, cmd_request_t *, int, int, int, const char *, int);
+static int export_cmd_modrtu_device(jbuf_t *, redisContext *, cmd_request_t *, int);
 static int export_cmd_modtcp_device(jbuf_t *, redisContext *, cmd_request_t *);
+
+/*
+ * Is the serial port currently used for Modbus RTU?
+ * serial_port_<port_id>_cfg "device_type": 1 = DLMS, 2 = Modbus.
+ * When a port is switched from Modbus to DLMS, its old modrtu_serial<port>_*
+ * hashes can stay in Redis (still enable_device = 1). They must not be
+ * reported, so every RTU export checks the port's device_type first.
+ * port_id: 0 = serial port 1, 1 = serial port 2.
+ */
+#define SERIAL_DEVICE_TYPE_MODBUS 2
+
+static int serial_port_is_modbus(redisContext *ctx, int port_id)
+{
+    char key[64];
+
+    snprintf(key, sizeof(key), "serial_port_%d_cfg", port_id);
+    return rget_int(ctx, key, "device_type", 0) == SERIAL_DEVICE_TYPE_MODBUS;
+}
 
 
 int jbuf_init(jbuf_t *jb)
@@ -1134,10 +1152,15 @@ char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
 
     int total_devices = 0;
 
-    /* RTU devices */
+    /* RTU devices - only on ports whose device_type is Modbus, with the same
+     * device limit as the export loop below (otherwise left-over hashes of a
+     * DLMS port were counted and the last-device detection was off) */
     for (uint16_t p = 0; p < num_serial_ports; p++)
     {
-        for (uint16_t d = 0; d < MAX_RTU_DEVICES; d++)
+        if (!serial_port_is_modbus(ctx, p))
+            continue;
+
+        for (uint16_t d = 0; d < MAX_MODRTU_DEVICES; d++)
         {
             char cfg_key[128];
             snprintf(cfg_key,sizeof(cfg_key),"modrtu_serial%u_%u_cfg",p,d);
@@ -1219,6 +1242,23 @@ char *modbus_export_json(redisContext *ctx, uint16_t num_serial_ports)
 }
 
 
+/* Why the last ReadModbus export returned NULL (for the reply's PARAM /
+ * REASON): kind 9 = invalid value (bad SERIAL_PORT), 10 = device not found. */
+static int g_mb_cmd_err_kind;
+static char g_mb_cmd_err_param[32];
+static char g_mb_cmd_err_reason[160];
+
+static void modbus_cmd_set_error(int kind, const char *param, const char *reason)
+{
+    g_mb_cmd_err_kind = kind;
+    snprintf(g_mb_cmd_err_param, sizeof(g_mb_cmd_err_param), "%s", param);
+    snprintf(g_mb_cmd_err_reason, sizeof(g_mb_cmd_err_reason), "%s", reason);
+}
+
+int modbus_cmd_error_kind(void) { return g_mb_cmd_err_kind; }
+const char *modbus_cmd_error_param(void) { return g_mb_cmd_err_param; }
+const char *modbus_cmd_error_reason(void) { return g_mb_cmd_err_reason; }
+
 char *modbus_cmd_export_json(redisContext *ctx, cmd_request_t *cmd)
 {
     jbuf_t jb;
@@ -1250,9 +1290,61 @@ char *modbus_cmd_export_json(redisContext *ctx, cmd_request_t *cmd)
     jbuf_append(&jb,
         "\"MODBUS_DEVICES\":[");
 
+    /*
+     * Which devices are read
+     * ----------------------
+     * 1. Check what each serial port is used for right now:
+     *      serial_port_0_cfg (port 1) / serial_port_1_cfg (port 2)
+     *      device_type 1 = DLMS, 2 = Modbus
+     *    A DLMS port is skipped completely, so Modbus RTU hashes left over
+     *    from when the port was Modbus are never used.
+     * 2. Build MODBUS_DEVICES from every enabled device with this SLAVE_ID:
+     *      Modbus TCP, then RTU on port 1 and RTU on port 2 (Modbus ports only)
+     *    Each entry carries "DEVICE_TYPE" ("MODBUS_TCP" / "MODBUS_RTU") and
+     *    RTU entries "SERIAL_PORT" (1 / 2). Entries are separated by ",";
+     *    a "," written before a device that is then not found is taken back.
+     */
     int exported = 0;
-    exported += export_cmd_modrtu_device(&jb, ctx, cmd);
-    exported += export_cmd_modtcp_device(&jb, ctx, cmd);
+    int port_is_modbus[2];
+    size_t mark;
+
+    modbus_cmd_set_error(0, "", "");
+
+    for (int port_id = 0; port_id < 2; port_id++)
+    {
+        port_is_modbus[port_id] = serial_port_is_modbus(ctx, port_id);
+        LOG_INFO("ReadModbus: serial port %d is %s", port_id + 1,
+                 port_is_modbus[port_id] ? "Modbus RTU" : "not Modbus (skipped)");
+    }
+
+    /* Modbus TCP */
+    if (export_cmd_modtcp_device(&jb, ctx, cmd))
+        exported++;
+
+    /* Modbus RTU, only on ports whose device_type is Modbus */
+    for (int port_id = 0; port_id < 2; port_id++)
+    {
+        if (!port_is_modbus[port_id])
+            continue;
+
+        mark = jb.len;
+        if (exported)
+            jbuf_append(&jb, ",");
+        if (export_cmd_modrtu_device(&jb, ctx, cmd, port_id))
+            exported++;
+        else
+            jb.data[jb.len = mark] = '\0';
+    }
+
+    if (exported == 0)
+    {
+        char reason[128];
+
+        snprintf(reason, sizeof(reason),
+                 "No enabled Modbus device with SLAVE_ID %d", cmd->slave_id);
+        modbus_cmd_set_error(10, "SLAVE_ID", reason);
+    }
+
     if (exported == 0)
     {
         /* DR-38: no enabled device with this SLAVE_ID - caller sends a
@@ -1367,76 +1459,160 @@ void export_dcu_details(jbuf_t *jb, redisContext *ctx)
     free(attr1); free(attr2); free(attr3); free(attr4); free(attr5);
 }
 
-static int export_cmd_register(jbuf_t *jb,redisContext *ctx,const char *reg_cfg_key,const char *value_hash,modbus_reg_t *req_reg, int is_last)
+/*
+ * ReadModbus registers
+ * --------------------
+ * Each request row is [ADDRESS, TYPE, COUNT], as in a Modbus read:
+ *   ADDRESS = first address, TYPE = Modbus function code, COUNT = number of
+ *   16-bit registers (or coils/inputs for FC 1/2): ADDRESS .. ADDRESS+COUNT-1
+ *   (0 or missing counts as 1).
+ * A configured point of the device (modrtu_serial<p>_<d>_reg_<r>_cfg /
+ * modtcp_<d>_reg_<r>_cfg: start_addr, func_type, num_regs, name_id) uses
+ * num_regs registers: 1 = 16-bit, 2 = 32-bit, 4 = 64-bit value. It is
+ * returned when its func_type equals TYPE and ALL its registers
+ * (start_addr .. start_addr+num_regs-1) lie inside the range; a 32-bit value
+ * cut by the range end is left out, because half of it cannot be decoded.
+ * Addresses in the range without a configured point are skipped (the range
+ * does not have to be contiguous); no placeholder is written for them.
+ * Output per point (unchanged): [ADDRESS, NAME, TYPE, VALUE], value from
+ * field reg_<address> of its value hash, null if no value yet.
+ * Points are written in request order, then by address. NUM_VALS is the
+ * number of points written.
+ */
+#define CMD_MAX_COUNT 65536
+
+typedef struct
 {
+    int  addr;
+    int  fc;
+    int  nregs; /* registers used by the value: 1 = 16-bit, 2 = 32-bit ... */
     char name[64];
+    char value_hash[256];
+} cmd_point_t;
 
-    /* Register configuration must exist */
-    if (!rget_str(ctx, reg_cfg_key, "name_id", name, sizeof(name)))
-        return 0;
-
-    int func_type  = rget_int(ctx, reg_cfg_key, "func_type", 3);
-    int start_addr = rget_int(ctx, reg_cfg_key, "start_addr", -1);
-
-    /* This isn't the requested register */
-    if (start_addr != req_reg->address)
-        return 0;
-
-    /* Read value from Redis */
+static void cmd_write_point(jbuf_t *jb, redisContext *ctx, const cmd_point_t *pt)
+{
     char field[64];
     char value[128];
 
-    snprintf(field, sizeof(field), "reg_%d", start_addr);
-
-    if (!rget_str(ctx, value_hash, field, value, sizeof(value)))
+    snprintf(field, sizeof(field), "reg_%d", pt->addr);
+    if (!rget_str(ctx, pt->value_hash, field, value, sizeof(value)))
         value[0] = '\0';
 
-    int is_coil = (func_type == 1 || func_type == 2);
-
-    /* Output:
-       [ADDRESS, NAME, TYPE, VALUE]
-    */
-
-    jbuf_append(jb, "[");
-
-    jbuf_append(jb, "%d,", start_addr);
-
-    jbuf_append_escaped(jb, name);
-
-    jbuf_append(jb, ",");
-
-    jbuf_append(jb, "%d,", func_type);
+    jbuf_append(jb, "[%d,", pt->addr);
+    jbuf_append_escaped(jb, pt->name);
+    jbuf_append(jb, ",%d,", pt->fc);
 
     if (value[0] == '\0')
-    {
         jbuf_append(jb, "null");
-    }
-    else if (is_coil)
-    {
+    else if (pt->fc == 1 || pt->fc == 2)
         jbuf_append_coil_value(jb, value);
-    }
     else
-    {
         jbuf_append_numeric_value(jb, value);
+
+    jbuf_append(jb, "]");
+}
+
+/* Writes "NUM_VALS":n,"REGISTERS":[...] for one device.
+ * is_rtu: 1 = Modbus RTU (port_id used), 0 = Modbus TCP. Returns n. */
+static int cmd_write_points(jbuf_t *jb, redisContext *ctx, cmd_request_t *cmd,
+                            int is_rtu, int port_id, int dev_idx,
+                            const char *dev_name, int num_points)
+{
+    cmd_point_t *pts = NULL;
+    int n = 0;
+    int total = 0;
+    int written = 0;
+
+    if (num_points > MAX_REGS_PER_DEV)
+        num_points = MAX_REGS_PER_DEV;
+    if (num_points > 0)
+        pts = calloc((size_t)num_points, sizeof(*pts));
+
+    /* 1. Read the device's configured points once */
+    for (int r = 0; pts != NULL && r < num_points; r++)
+    {
+        char reg_cfg_key[128];
+        cmd_point_t *pt = &pts[n];
+
+        if (is_rtu)
+        {
+            snprintf(reg_cfg_key, sizeof(reg_cfg_key), "modrtu_serial%d_%d_reg_%d_cfg", port_id, dev_idx, r);
+            snprintf(pt->value_hash, sizeof(pt->value_hash), "modrtu:%d:%d:%d:%s", port_id, dev_idx, r, dev_name);
+        }
+        else
+        {
+            snprintf(reg_cfg_key, sizeof(reg_cfg_key), "modtcp_%d_reg_%d_cfg", dev_idx, r);
+            snprintf(pt->value_hash, sizeof(pt->value_hash), "modtcp:eth:%d:%d:%s", dev_idx, r, dev_name);
+        }
+
+        if (!rget_str(ctx, reg_cfg_key, "name_id", pt->name, sizeof(pt->name)))
+            continue; /* register config does not exist */
+
+        pt->fc = rget_int(ctx, reg_cfg_key, "func_type", 3);
+        pt->addr = rget_int(ctx, reg_cfg_key, "start_addr", -1);
+        pt->nregs = rget_int(ctx, reg_cfg_key, "num_regs", 1);
+        if (pt->fc == 1 || pt->fc == 2 || pt->nregs < 1)
+            pt->nregs = 1; /* coils / discrete inputs: one bit per address */
+        n++;
+    }
+
+    /* 2. Count the matches (NUM_VALS comes before REGISTERS) */
+    for (int q = 0; q < cmd->reg_count; q++)
+    {
+        long first = cmd->regs[q].address;
+        long cnt = cmd->regs[q].count > 0 ? cmd->regs[q].count : 1;
+
+        if (cnt > CMD_MAX_COUNT)
+            cnt = CMD_MAX_COUNT;
+        for (int i = 0; i < n; i++)
+            if (pts[i].fc == cmd->regs[q].type && pts[i].addr >= first &&
+                (long)pts[i].addr + pts[i].nregs <= first + cnt)
+                total++;
+    }
+
+    jbuf_append(jb, ",\"NUM_VALS\":%d,", total);
+    jbuf_append(jb, "\"REGISTERS\":[");
+
+    /* 3. Write them: request order, then address order */
+    for (int q = 0; q < cmd->reg_count && n > 0; q++)
+    {
+        long first = cmd->regs[q].address;
+        long cnt = cmd->regs[q].count > 0 ? cmd->regs[q].count : 1;
+
+        if (cnt > CMD_MAX_COUNT)
+            cnt = CMD_MAX_COUNT;
+        for (long a = first; a < first + cnt; a++)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                if (pts[i].fc != cmd->regs[q].type || pts[i].addr != a ||
+                    (long)pts[i].addr + pts[i].nregs > first + cnt)
+                    continue;
+                if (written)
+                    jbuf_append(jb, ",");
+                cmd_write_point(jb, ctx, &pts[i]);
+                written++;
+            }
+        }
     }
 
     jbuf_append(jb, "]");
-
-    if (!is_last)
-        jbuf_append(jb, ",");
-
-    return 1;
+    free(pts);
+    return written;
 }
 
-static int export_cmd_modrtu_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *cmd)
+/* port_id: 0 = serial port 1, 1 = serial port 2 (same as modbus_export_json).
+ * Called only for ports whose device_type is Modbus (see modbus_cmd_export_json). */
+static int export_cmd_modrtu_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *cmd,int port_id)
 {
     int exported = 0;
 
-    for (int dev_idx = 0; dev_idx < MAX_RTU_DEVICES; dev_idx++)
+    for (int dev_idx = 0; dev_idx < MAX_MODRTU_DEVICES; dev_idx++)
     {
         char cfg_key[128];
 
-        snprintf(cfg_key,sizeof(cfg_key),"modrtu_serial1_%d_cfg",dev_idx);
+        snprintf(cfg_key,sizeof(cfg_key),"modrtu_serial%d_%d_cfg",port_id,dev_idx);
         if (rget_int(ctx, cfg_key, "enable_device", 0) == 0)
             continue;
         int slave_id = rget_int(ctx, cfg_key, "slave_id", 0);
@@ -1450,7 +1626,7 @@ static int export_cmd_modrtu_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *
 
         char status_key[128];
 
-        snprintf(status_key,sizeof(status_key),"modrtu_serial1_%d_status",dev_idx);
+        snprintf(status_key,sizeof(status_key),"modrtu_serial%d_%d_status",port_id,dev_idx);
 
         char status[64];
         char last_comm[64];
@@ -1471,6 +1647,10 @@ static int export_cmd_modrtu_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *
             slave_id);
 
         jbuf_append(jb,
+            "\"DEVICE_TYPE\":\"MODBUS_RTU\",\"SERIAL_PORT\":%d,",
+            port_id + 1);
+
+        jbuf_append(jb,
             "\"IP_ADDRESS\":\"\",");
         jbuf_append(jb,
             "\"NAME\":");
@@ -1481,33 +1661,10 @@ static int export_cmd_modrtu_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *
         jbuf_append(jb,
             ",\"LAST_UPDATE_TIME\":");
         jbuf_append_escaped(jb, last_comm);
-        jbuf_append(jb,
-            ",\"NUM_VALS\":%d,",
-            cmd->reg_count);
-        jbuf_append(jb,
-            "\"REGISTERS\":[");
+        /* NUM_VALS + REGISTERS selected by ADDRESS, TYPE (function code) and COUNT */
+        cmd_write_points(jb, ctx, cmd, 1, port_id, dev_idx, dev_name, num_points);
 
-        int reg_written = 0;
-
-        for (int r = 0; r < num_points; r++)
-        {
-            char reg_cfg_key[128];
-
-            snprintf(reg_cfg_key,sizeof(reg_cfg_key),"modrtu_serial1_%d_reg_%d_cfg",dev_idx,r);
-            char value_hash[128];
-            snprintf(value_hash,sizeof(value_hash),"modrtu:1:%d:%d:%s",dev_idx,r,dev_name);
-
-            for (int req = 0; req < cmd->reg_count; req++)
-            {
-                reg_written += export_cmd_register(jb,ctx,reg_cfg_key,value_hash,&cmd->regs[req],0);
-            }
-        }
-
-        /* Remove trailing comma */
-        if (jb->len && jb->data[jb->len - 1] == ',')
-            jb->data[--jb->len] = '\0';
-
-        jbuf_append(jb, "]}");
+        jbuf_append(jb, "}");
         exported = 1;
 
         break;
@@ -1590,6 +1747,9 @@ static int export_cmd_modtcp_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *
             slave_id);
 
         jbuf_append(jb,
+            "\"DEVICE_TYPE\":\"MODBUS_TCP\",");
+
+        jbuf_append(jb,
             "\"IP_ADDRESS\":");
         jbuf_append_escaped(jb, ip_addr);
 
@@ -1605,51 +1765,10 @@ static int export_cmd_modtcp_device(jbuf_t *jb,redisContext *ctx,cmd_request_t *
             ",\"LAST_UPDATE_TIME\":");
         jbuf_append_escaped(jb, last_comm);
 
-        jbuf_append(jb,
-            ",\"NUM_VALS\":%d,",
-            cmd->reg_count);
+        /* NUM_VALS + REGISTERS selected by ADDRESS, TYPE (function code) and COUNT */
+        cmd_write_points(jb, ctx, cmd, 0, 0, dev_idx, dev_name, num_points);
 
-        jbuf_append(jb,
-            "\"REGISTERS\":[");
-
-        int reg_written = 0;
-
-        for (int r = 0; r < num_points; r++)
-        {
-            char reg_cfg_key[128];
-
-            snprintf(reg_cfg_key,
-                     sizeof(reg_cfg_key),
-                     "modtcp_%d_reg_%d_cfg",
-                     dev_idx,
-                     r);
-
-            char value_hash[256];
-
-            snprintf(value_hash,
-                     sizeof(value_hash),
-                     "modtcp:eth:%d:%d:%s",
-                     dev_idx,
-                     r,
-                     dev_name);
-
-            for (int req = 0; req < cmd->reg_count; req++)
-            {
-                reg_written += export_cmd_register(
-                                    jb,
-                                    ctx,
-                                    reg_cfg_key,
-                                    value_hash,
-                                    &cmd->regs[req],
-                                    0);
-            }
-        }
-
-        /* Remove trailing comma */
-        if (jb->len && jb->data[jb->len - 1] == ',')
-            jb->data[--jb->len] = '\0';
-
-        jbuf_append(jb, "]}");
+        jbuf_append(jb, "}");
 
         exported = 1;
 

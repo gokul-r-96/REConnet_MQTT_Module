@@ -1214,8 +1214,8 @@ int set_modrtu_cfg(redisContext *ctx, cJSON *data)
 
 #undef UPDATE_INT
 
-    const char *mod_serial = (serial_port == 1) ? "modrtu_master 0"
-                                                : "modrtu_master 1";
+    const char *mod_serial = (serial_port == 1) ? "modrtu_master_0"
+                                                : "modrtu_master_1";
 
     reply = redisCommand(ctx, "SADD proc_restart %s", mod_serial);
     if (reply)
@@ -1275,6 +1275,78 @@ int find_meter(redisContext *redis,
     return -1;
 }
 
+/*
+ * DLMS meter text values (METER_ADDRESS, LLS_PASSWORD, HLS_PASSWORD)
+ * ------------------------------------------------------------------
+ * Accepts a JSON string as sent, or a JSON number written as digits.
+ * Passwords get no content check (any characters, may be empty).
+ * Returns 1 = present (out filled), 0 = not sent, -1 = wrong JSON type,
+ *        -2 = longer than the buffer.
+ */
+static int dlms_get_text(cJSON *data, const char *key, char *out, size_t len)
+{
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(data, key);
+
+    out[0] = '\0';
+    if (item == NULL || cJSON_IsNull(item))
+        return 0;
+
+    if (cJSON_IsString(item) && item->valuestring)
+    {
+        if (strlen(item->valuestring) >= len)
+            return -2;
+        snprintf(out, len, "%s", item->valuestring);
+        return 1;
+    }
+
+    if (cJSON_IsNumber(item))
+    {
+        double d = item->valuedouble;
+
+        if (d == (double)(long)d)
+            snprintf(out, len, "%ld", (long)d);
+        else
+            snprintf(out, len, "%g", d);
+        return 1;
+    }
+
+    return -1;
+}
+
+/* Same, but records the failure reason (PARAM / REASON in the reply).
+ * Returns 1 = present, 0 = not sent, -1 = invalid (reason recorded). */
+static int dlms_read_text(cJSON *data, const char *key, char *out, size_t len)
+{
+    int rc = dlms_get_text(data, key, out, len);
+
+    if (rc == -1)
+        return set_cfg_fail(key, "%s must be a string or a number", key);
+    if (rc == -2)
+        return set_cfg_fail(key, "%s is too long (max %d characters)", key, (int)len - 1);
+    return rc;
+}
+
+/* HSET <hash> <name>[<meter_id>] <value>, the per-meter index used for
+ * meter_loc / meter_addr: password[N] = LLS, secret[N] = HLS. */
+static int dlms_hset_indexed(redisContext *ctx, const char *hash, const char *name,
+                             int meter_id, const char *value)
+{
+    char key[64];
+    redisReply *reply;
+
+    snprintf(key, sizeof(key), "%s[%d]", name, meter_id);
+    reply = redisCommand(ctx, "HSET %s %s %s", hash, key, value);
+    if (!reply || reply->type == REDIS_REPLY_ERROR)
+    {
+        if (reply)
+            freeReplyObject(reply);
+        LOG_ERROR("Redis HSET %s %s failed", hash, key);
+        return set_cfg_fail("", "Redis write of %s failed", key);
+    }
+    freeReplyObject(reply);
+    return 0;
+}
+
 int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
 {
     redisReply *reply;
@@ -1315,6 +1387,18 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
         return set_cfg_fail("METER_ADDRESS", "METER_ADDRESS missing or not a number/string");
     }
 
+    /* LLS_PASSWORD -> password[N], HLS_PASSWORD -> secret[N] (optional) */
+    char lls_password[128];
+    char hls_password[128];
+    int has_lls = dlms_read_text(data, "LLS_PASSWORD", lls_password, sizeof(lls_password));
+    int has_hls;
+
+    if (has_lls < 0)
+        return -1;
+    has_hls = dlms_read_text(data, "HLS_PASSWORD", hls_password, sizeof(hls_password));
+    if (has_hls < 0)
+        return -1;
+
     char hash_name[64];
     snprintf(hash_name, sizeof(hash_name),
              "serial_port_%d_cfg", serial_port - 1);
@@ -1339,7 +1423,15 @@ int set_dlms_serial_cfg(redisContext *ctx, cJSON *data)
 
     freeReplyObject(reply);
 
-    const char *dlms_serial = (serial_port == 1) ? "SerDaProc 0" : "SerDaProc 1";
+    /* Passwords, same meter index as meter_addr[N] (values are not logged) */
+    if (has_lls == 1 && dlms_hset_indexed(ctx, hash_name, "password", meter_id, lls_password) != 0)
+        return -1;
+    if (has_hls == 1 && dlms_hset_indexed(ctx, hash_name, "secret", meter_id, hls_password) != 0)
+        return -1;
+    LOG_INFO("DLMS serial meter '%s' (port %d, index %d): address set%s%s", meter_name, serial_port,
+             meter_id, has_lls == 1 ? ", LLS password set" : "", has_hls == 1 ? ", HLS password set" : "");
+
+    const char *dlms_serial = (serial_port == 1) ? "SerDaProc_0" : "SerDaProc_1";
     reply = redisCommand(ctx, "SADD proc_restart %s", dlms_serial);
     if (reply)
     {
@@ -1393,6 +1485,24 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
         return set_cfg_fail("IP_ADDR", "IP_ADDR missing or not a string");
     }
 
+    /* METER_ADDRESS -> meter_addr[N], LLS_PASSWORD -> password[N],
+     * HLS_PASSWORD -> secret[N] (each written only when sent) */
+    char meter_address[64];
+    char lls_password[128];
+    char hls_password[128];
+    int has_addr = dlms_read_text(data, "METER_ADDRESS", meter_address, sizeof(meter_address));
+    int has_lls;
+    int has_hls;
+
+    if (has_addr < 0)
+        return -1;
+    has_lls = dlms_read_text(data, "LLS_PASSWORD", lls_password, sizeof(lls_password));
+    if (has_lls < 0)
+        return -1;
+    has_hls = dlms_read_text(data, "HLS_PASSWORD", hls_password, sizeof(hls_password));
+    if (has_hls < 0)
+        return -1;
+
     char hash_name[64];
     snprintf(hash_name, sizeof(hash_name),
              "ethernet_meter_cfg");
@@ -1417,8 +1527,19 @@ int set_dlms_ethernet_cfg(redisContext *ctx, cJSON *data)
 
     freeReplyObject(reply);
 
+    /* Same meter index as ip_addr[N] (password values are not logged) */
+    if (has_addr == 1 && dlms_hset_indexed(ctx, hash_name, "meter_addr", meter_id, meter_address) != 0)
+        return -1;
+    if (has_lls == 1 && dlms_hset_indexed(ctx, hash_name, "password", meter_id, lls_password) != 0)
+        return -1;
+    if (has_hls == 1 && dlms_hset_indexed(ctx, hash_name, "secret", meter_id, hls_password) != 0)
+        return -1;
+    LOG_INFO("DLMS Ethernet meter '%s' (index %d): IP set%s%s%s", meter_name, meter_id,
+             has_addr == 1 ? ", address set" : "", has_lls == 1 ? ", LLS password set" : "",
+             has_hls == 1 ? ", HLS password set" : "");
+
     char eth_proc[64];
-    snprintf(eth_proc, sizeof(eth_proc), "ethDaProc %d", meter_id);
+    snprintf(eth_proc, sizeof(eth_proc), "ethDaProc_%d", meter_id);
 
     reply = redisCommand(ctx, "SADD proc_restart %s", eth_proc);
     if (reply)

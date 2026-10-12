@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <time.h>
 #include "json_helper.h"
@@ -9,11 +10,39 @@
 /* Uncomment to send ALL values as JSON strings */
 #define MQTT_JSON_ALL_STRING
 
-/* T03/DR-26: get_cfg never returns a stored secret. A field whose JSON name
- * contains PASSWORD reads back as "****" when set, "" when empty. */
+/* T03/DR-26 password masking, now a build option.
+ *
+ *   GET_CFG_MASK_SECRETS not defined (default): get_cfg returns the
+ *       actual stored passwords.
+ *   GET_CFG_MASK_SECRETS defined: a field whose JSON name contains
+ *       PASSWORD reads back as "****" when set, "" when empty.
+ *
+ * Enable it by uncommenting the line below or with -DGET_CFG_MASK_SECRETS. */
+/* #define GET_CFG_MASK_SECRETS */
+
+#ifdef GET_CFG_MASK_SECRETS
 #define MASK_SECRET(json_field)                            \
     if (strstr(json_field, "PASSWORD") && buf[0] != '\0') \
     snprintf(buf, sizeof(buf), "****")
+#else
+#define MASK_SECRET(json_field) \
+    do                          \
+    {                           \
+    } while (0)
+#endif
+
+/* A password field that is always written: the value (or "****" with
+ * GET_CFG_MASK_SECRETS), "" when the Redis field is missing (e.g. secret[N] on meters configured before HLS
+ * was supported), so the "," around it never leaves the JSON invalid. */
+#define ADD_SECRET_ALWAYS(hash, redis_field, json_field)          \
+    do                                                            \
+    {                                                             \
+        if (!rget_str(ctx, hash, redis_field, buf, sizeof(buf)))  \
+            buf[0] = '\0';                                        \
+        MASK_SECRET(json_field);                                  \
+        jbuf_append(&jb, "\"" json_field "\":");                  \
+        jbuf_append_escaped(&jb, buf);                            \
+    } while (0)
 
 static int export_one_mqtt_cfg(jbuf_t *jb, redisContext *ctx, int instance, int is_last)
 {
@@ -577,6 +606,13 @@ char *export_iec104_cfg(redisContext *ctx, cmd_request_t *cmd)
     ADD_STR("master_1_ip", "MASTER_1_IP");
     ADD_BOOL("master_1_enabled", "MASTER_1_ENABLED");
 
+    ADD_STR("master_2_ip", "MASTER_2_IP");
+    ADD_BOOL("master_2_enabled", "MASTER_2_ENABLED");
+
+    ADD_STR("master_3_ip", "MASTER_3_IP");
+    ADD_BOOL("master_3_enabled", "MASTER_3_ENABLED");
+
+
     ADD_BOOL("enable_tls", "ENABLE_TLS");
 
     ADD_STR("ca_certificate", "CA_CERTIFICATE");
@@ -711,6 +747,13 @@ char *export_iec101_cfg(redisContext *ctx, cmd_request_t *cmd)
 
     ADD_STR("master_1_ip", "MASTER_1_IP");
     ADD_BOOL("master_1_enabled", "MASTER_1_ENABLED");
+
+    ADD_STR("master_2_ip", "MASTER_2_IP");
+    ADD_BOOL("master_2_enabled", "MASTER_2_ENABLED");
+
+    ADD_STR("master_3_ip", "MASTER_3_IP");
+    ADD_BOOL("master_3_enabled", "MASTER_3_ENABLED");
+
 
     ADD_BOOL("enable_tls", "ENABLE_TLS");
 
@@ -984,7 +1027,35 @@ char *export_ntp_cfg(redisContext *ctx, cmd_request_t *cmd)
     ADD_STR("ntp_sync_time", "LAST_SYNC_TIME");
     ADD_STR("next_sync_time", "NEXT_SYNC_TIME");
     ADD_STR("synced_server", "SYNCED_SERVER");
-    ADD_STR("failure_reason", "FAILURE_REASON");
+
+    /* FAILURE_REASON only when the last sync was not a success:
+     * ntp_sync_status "success" (any case) -> no FAILURE_REASON;
+     * anything else or not set           -> FAILURE_REASON ("" if not stored) */
+    {
+        int sync_ok = 0;
+
+        if (rget_str(ctx, "ntp_cfg", "ntp_sync_status", buf, sizeof(buf)))
+        {
+            char *s = buf;
+            size_t n;
+
+            while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n')
+                s++;
+            n = strlen(s);
+            while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\r' || s[n - 1] == '\n'))
+                n--;
+            sync_ok = (n == 7 && strncasecmp(s, "success", 7) == 0);
+        }
+
+        if (!sync_ok)
+        {
+            if (!rget_str(ctx, "ntp_cfg", "failure_reason", buf, sizeof(buf)))
+                buf[0] = '\0';
+            jbuf_append(&jb, "\"FAILURE_REASON\":");
+            jbuf_append_escaped(&jb, buf);
+            jbuf_append(&jb, ",");
+        }
+    }
 
 #undef ADD_STR
 #undef ADD_INT
@@ -1185,7 +1256,16 @@ char *export_modtcp_cfg(redisContext *ctx, cmd_request_t *cmd)
 
         ADD_INT("num_points", "NUM_POINTS");
 
-        ADD_INT("resp_timeout", "RESPONSE_TIMEOUT");
+        /* resp_timeout is stored in ms; reported in seconds like set_cfg's
+         * RESP_TIMEOUT (set_cfg multiplies by 1000) */
+        snprintf(buf, sizeof(buf), "%d", rget_int(ctx, hash, "resp_timeout", 0) / 1000);
+#ifdef MQTT_JSON_ALL_STRING
+        jbuf_append(&jb, "\"RESPONSE_TIMEOUT\":");
+        jbuf_append_escaped(&jb, buf);
+        jbuf_append(&jb, ",");
+#else
+        jbuf_append(&jb, "\"RESPONSE_TIMEOUT\":%s,", buf);
+#endif
         ADD_INT("retries", "RETRIES");
 
         ADD_INT("poll_faulty_cnt", "POLL_FAULTY_COUNT");
@@ -1360,7 +1440,16 @@ static int export_one_modrtu_cfg(jbuf_t *jb, redisContext *ctx, int port, int de
     ADD_INT("slave_id", "SLAVE_ID");
     ADD_INT("num_points", "NUM_POINTS");
 
-    ADD_INT("resp_timeout", "RESPONSE_TIMEOUT");
+    /* resp_timeout is stored in ms; reported in seconds like set_cfg's
+     * RESP_TIMEOUT (set_cfg multiplies by 1000) */
+    snprintf(buf, sizeof(buf), "%d", rget_int(ctx, hash, "resp_timeout", 0) / 1000);
+#ifdef MQTT_JSON_ALL_STRING
+    jbuf_append(jb, "\"RESPONSE_TIMEOUT\":");
+    jbuf_append_escaped(jb, buf);
+    jbuf_append(jb, ",");
+#else
+    jbuf_append(jb, "\"RESPONSE_TIMEOUT\":%s,", buf);
+#endif
     ADD_INT("retries", "RETRIES");
 
     ADD_INT("poll_faulty_cnt", "POLL_FAULTY_COUNT");
@@ -1568,9 +1657,17 @@ char *export_dlms_serial_cfg(redisContext *ctx, cmd_request_t *cmd)
             ADD_STR(hash_name, key, "METER_ADDRESS");
             jbuf_append(&jb, ",");
 
+            /* LLS_PASSWORD = password[N], HLS_PASSWORD = secret[N]. Always
+             * sent ("" when not set) so the JSON stays valid; "****" only
+             * with GET_CFG_MASK_SECRETS (T03/DR-26). */
             memset(key, 0, sizeof(key));
             sprintf(key, "password[%d]", j + 1);
-            ADD_STR(hash_name, key, "METER_PASSWORD");
+            ADD_SECRET_ALWAYS(hash_name, key, "LLS_PASSWORD");
+            jbuf_append(&jb, ",");
+
+            memset(key, 0, sizeof(key));
+            sprintf(key, "secret[%d]", j + 1);
+            ADD_SECRET_ALWAYS(hash_name, key, "HLS_PASSWORD");
             if (j == num_meters - 1)
             {
                 jbuf_append(&jb, "}");
@@ -1693,9 +1790,17 @@ char *export_dlms_ethernet_cfg(redisContext *ctx, cmd_request_t *cmd)
         ADD_STR(hash_name, key, "METER_ADDRESS");
         jbuf_append(&jb, ",");
 
+        /* LLS_PASSWORD = password[N], HLS_PASSWORD = secret[N]. Always
+         * sent ("" when not set) so the JSON stays valid; "****" only
+         * with GET_CFG_MASK_SECRETS (T03/DR-26). */
         memset(key, 0, sizeof(key));
         sprintf(key, "password[%d]", j);
-        ADD_STR(hash_name, key, "METER_PASSWORD");
+        ADD_SECRET_ALWAYS(hash_name, key, "LLS_PASSWORD");
+        jbuf_append(&jb, ",");
+
+        memset(key, 0, sizeof(key));
+        sprintf(key, "secret[%d]", j);
+        ADD_SECRET_ALWAYS(hash_name, key, "HLS_PASSWORD");
         if (j == num_meters - 1)
         {
             jbuf_append(&jb, "}");

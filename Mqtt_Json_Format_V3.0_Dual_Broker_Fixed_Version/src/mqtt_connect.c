@@ -4609,6 +4609,10 @@ int resp_failed_detail(cmd_request_t cmd, const char *param, const char *reason,
 void set_cfg_after_reply(redisContext *ctx, cmd_request_t *cmd);
 const char *set_cfg_last_error_param(void);
 const char *set_cfg_last_error_reason(void);
+/* Provided by modbus_json_export.c: why ReadModbus found no data */
+int modbus_cmd_error_kind(void);
+const char *modbus_cmd_error_param(void);
+const char *modbus_cmd_error_reason(void);
 
 static int val_redis_hget_long(const char *hash, const char *field, long *out)
 {
@@ -4981,8 +4985,15 @@ printf("00000000\n");
         }
         else
         {
-            LOG_INFO("Modbus JSON Buffer is empty so sending failed message");
-            msg_size = failure_resp_msg(cmd, output_msg);
+            LOG_INFO("ReadModbus: no data (param=%s reason=%s)",
+                     modbus_cmd_error_param(), modbus_cmd_error_reason());
+            /* 9 for a bad SERIAL_PORT value, otherwise FAILED (10), with PARAM / REASON */
+            if (modbus_cmd_error_kind() == 9)
+                msg_size = resp_invalid_value_detail(cmd, modbus_cmd_error_param(),
+                                                     modbus_cmd_error_reason(), output_msg);
+            else
+                msg_size = resp_failed_detail(cmd, modbus_cmd_error_param(),
+                                              modbus_cmd_error_reason(), output_msg);
             mqtt_send_msg(conn, output_msg, msg_size, CMD_RESP_TOPIC);
         }
         if (cmd.root)

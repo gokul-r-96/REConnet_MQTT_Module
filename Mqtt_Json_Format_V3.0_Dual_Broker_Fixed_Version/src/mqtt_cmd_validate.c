@@ -463,13 +463,14 @@ static const fld_t F_MODRTU[] = {
 };
 
 /* meterConfig serial1/serial2. Name: required, input maxLength 32.
- * Address: >= 1, no upper limit in the UI. LLS password: required for an
- * enabled meter. HLS password: no validation in the UI. */
+ * Address: >= 1, no upper limit in the UI. LLS / HLS passwords: not
+ * validated (any characters, string or number; stored as password[N] /
+ * secret[N]). */
 static const fld_t F_DLMS_SERIAL[] = {
     FSET("SERIAL_PORT", SET_1_2, F_MANDATORY | F_SELECTOR),
     FSTR("METER_NAME", 0, 32, F_MANDATORY | F_SELECTOR | F_NONBLANK),
     FINT("METER_ADDRESS", 1, NUM_MAX, F_MANDATORY),
-    FSTR("LLS_PASSWORD", 0, 0, F_NONBLANK),
+    FSTR("LLS_PASSWORD", 0, 0, 0),             /* no password validation */
     FSTR("HLS_PASSWORD", 0, 0, 0),
     FKIND("COMMON_ADDR", K_COMMON_ADDR, 0),
     FEND
@@ -480,7 +481,7 @@ static const fld_t F_DLMS_ETH[] = {
     FSTR("METER_NAME", 0, 32, F_MANDATORY | F_SELECTOR | F_NONBLANK),
     FINT("METER_ADDRESS", 1, NUM_MAX, F_MANDATORY),
     FSTR("IP_ADDR", 0, 0, F_NONBLANK),
-    FSTR("LLS_PASSWORD", 0, 0, F_NONBLANK),
+    FSTR("LLS_PASSWORD", 0, 0, 0),             /* no password validation */
     FSTR("HLS_PASSWORD", 0, 0, 0),
     FKIND("COMMON_ADDR", K_COMMON_ADDR, 0),
     FEND
